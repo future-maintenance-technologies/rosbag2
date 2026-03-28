@@ -1,0 +1,5 @@
+# Optional: override storage_options.uri for this recording session
+string uri
+---
+int32 return_code      # 0 = success
+string error_string

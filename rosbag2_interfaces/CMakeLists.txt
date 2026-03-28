@@ -23,7 +23,9 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/Resume.srv"
   "srv/Seek.srv"
   "srv/SetRate.srv"
+  "srv/Record.srv"
   "srv/Snapshot.srv"
+  "srv/Stop.srv"
   "srv/TogglePaused.srv"
   DEPENDENCIES builtin_interfaces
   ADD_LINTER_TESTS

@@ -35,6 +35,7 @@ find_package(rosbag2_storage REQUIRED)
 find_package(rmw_implementation_cmake REQUIRED)
 find_package(shared_queues_vendor REQUIRED)
 find_package(yaml_cpp_vendor REQUIRED)
+find_package(rclcpp_components REQUIRED)
 
 add_library(${PROJECT_NAME} SHARED
   src/rosbag2_transport/bag_rewrite.cpp
@@ -51,6 +52,7 @@ ament_target_dependencies(${PROJECT_NAME}
   keyboard_handler
   rcl
   rclcpp
+  rclcpp_components
   rcutils
   rmw
   rosbag2_compression
@@ -64,6 +66,10 @@ ament_target_dependencies(${PROJECT_NAME}
 # Causes the visibility macros to use dllexport rather than dllimport,
 # which is appropriate when building the dll but not consuming it.
 target_compile_definitions(${PROJECT_NAME} PRIVATE "ROSBAG2_TRANSPORT_BUILDING_LIBRARY")
+
+rclcpp_components_register_node(${PROJECT_NAME}
+  PLUGIN "rosbag2_transport::Recorder"
+  EXECUTABLE rosbag2_recorder_component)
 
 install(
   DIRECTORY include/
@@ -86,6 +92,7 @@ ament_export_targets(export_${PROJECT_NAME})
 
 ament_export_dependencies(
   keyboard_handler
+  rclcpp_components
   rosbag2_cpp
   rosbag2_compression
   rosbag2_interfaces

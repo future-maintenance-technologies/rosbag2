@@ -30,7 +30,14 @@
 #include "rosbag2_cpp/bag_events.hpp"
 #include "rosbag2_cpp/writer.hpp"
 
+#include "rosbag2_interfaces/srv/is_paused.hpp"
+#include "rosbag2_interfaces/srv/pause.hpp"
+#include "rosbag2_interfaces/srv/record.hpp"
+#include "rosbag2_interfaces/srv/resume.hpp"
 #include "rosbag2_interfaces/srv/snapshot.hpp"
+#include "rosbag2_interfaces/srv/stop.hpp"
+
+#include "rclcpp_components/register_node_macro.hpp"
 
 #include "rosbag2_storage/yaml.hpp"
 #include "rosbag2_transport/qos.hpp"
@@ -43,12 +50,158 @@ namespace rosbag2_transport
 Recorder::Recorder(
   const std::string & node_name,
   const rclcpp::NodeOptions & node_options)
-: rclcpp::Node(node_name, node_options)
+: rclcpp::Node(
+    node_name,
+    rclcpp::NodeOptions(node_options).start_parameter_event_publisher(false)),
+  writer_(std::make_shared<rosbag2_cpp::Writer>()),
+  stop_discovery_(false),
+  paused_(false),
+  keyboard_handler_(
+#ifndef _WIN32
+    std::make_shared<KeyboardHandler>(false)
+#else
+    std::shared_ptr<KeyboardHandler>(new KeyboardHandler())
+#endif
+  )
 {
-  // TODO(karsten1987): Use this constructor later with parameter parsing.
-  // The reader, storage_options as well as record_options can be loaded via parameter.
-  // That way, the recorder can be used as a simple component in a component manager.
-  throw rclcpp::exceptions::UnimplementedError();
+  // Declare storage parameters
+  declare_parameter("storage.uri", "");
+  declare_parameter("storage.storage_id", "mcap");
+  declare_parameter<int64_t>("storage.max_bagfile_size", 0);
+  declare_parameter<int64_t>("storage.max_bagfile_duration", 0);
+  declare_parameter<int64_t>("storage.max_cache_size", static_cast<int64_t>(100 * 1024 * 1024));
+  declare_parameter("storage.snapshot_mode", false);
+
+  // Declare record parameters
+  declare_parameter("record.all", true);
+  declare_parameter("record.topics", std::vector<std::string>{});
+  declare_parameter("record.rmw_serialization_format", std::string(rmw_get_serialization_format()));
+  declare_parameter("record.start_paused", false);
+  declare_parameter("record.is_discovery_disabled", false);
+  declare_parameter("record.node_prefix", "");
+  declare_parameter("record.regex", "");
+  declare_parameter("record.exclude", "");
+  declare_parameter("record.include_hidden_topics", false);
+  declare_parameter("record.include_unpublished_topics", false);
+  declare_parameter("record.ignore_leaf_topics", false);
+  declare_parameter("record.compression_mode", "");
+  declare_parameter("record.compression_format", "");
+  declare_parameter<int64_t>("record.compression_queue_size", 0);
+  declare_parameter<int64_t>("record.compression_threads", 0);
+  declare_parameter("record.use_sim_time", false);
+
+  // Populate storage_options_
+  storage_options_.uri = get_parameter("storage.uri").as_string();
+  storage_options_.storage_id = get_parameter("storage.storage_id").as_string();
+  storage_options_.max_bagfile_size =
+    static_cast<uint64_t>(get_parameter("storage.max_bagfile_size").as_int());
+  storage_options_.max_bagfile_duration =
+    static_cast<uint64_t>(get_parameter("storage.max_bagfile_duration").as_int());
+  storage_options_.max_cache_size =
+    static_cast<uint64_t>(get_parameter("storage.max_cache_size").as_int());
+  storage_options_.snapshot_mode = get_parameter("storage.snapshot_mode").as_bool();
+
+  // Populate record_options_
+  record_options_.all = get_parameter("record.all").as_bool();
+  record_options_.topics = get_parameter("record.topics").as_string_array();
+  record_options_.rmw_serialization_format =
+    get_parameter("record.rmw_serialization_format").as_string();
+  record_options_.start_paused = get_parameter("record.start_paused").as_bool();
+  record_options_.is_discovery_disabled = get_parameter("record.is_discovery_disabled").as_bool();
+  record_options_.node_prefix = get_parameter("record.node_prefix").as_string();
+  record_options_.regex = get_parameter("record.regex").as_string();
+  record_options_.exclude = get_parameter("record.exclude").as_string();
+  record_options_.include_hidden_topics = get_parameter("record.include_hidden_topics").as_bool();
+  record_options_.include_unpublished_topics =
+    get_parameter("record.include_unpublished_topics").as_bool();
+  record_options_.ignore_leaf_topics = get_parameter("record.ignore_leaf_topics").as_bool();
+  record_options_.compression_mode = get_parameter("record.compression_mode").as_string();
+  record_options_.compression_format = get_parameter("record.compression_format").as_string();
+  record_options_.compression_queue_size =
+    static_cast<uint64_t>(get_parameter("record.compression_queue_size").as_int());
+  record_options_.compression_threads =
+    static_cast<uint64_t>(get_parameter("record.compression_threads").as_int());
+  record_options_.use_sim_time = get_parameter("record.use_sim_time").as_bool();
+
+  if (record_options_.use_sim_time && record_options_.is_discovery_disabled) {
+    throw std::runtime_error(
+            "use_sim_time and is_discovery_disabled both set, but are incompatible settings. "
+            "The /clock topic needs to be discovered to record with sim time.");
+  }
+
+  // Expand topic names
+  for (auto & topic : record_options_.topics) {
+    topic = rclcpp::expand_topic_or_service_name(topic, get_name(), get_namespace(), false);
+  }
+
+  // Set up keyboard handler for pause/resume toggle
+  toggle_paused_key_callback_handle_ =
+    keyboard_handler_->add_key_press_callback(
+    [this](KeyboardHandler::KeyCode /*key_code*/,
+      KeyboardHandler::KeyModifiers /*key_modifiers*/) {this->toggle_paused();},
+    Recorder::kPauseResumeToggleKey);
+
+  // Create control services (Record, Stop, Pause, Resume, IsPaused)
+  srv_record_ = create_service<rosbag2_interfaces::srv::Record>(
+    "~/record",
+    [this](
+      const std::shared_ptr<rmw_request_id_t> /*request_header*/,
+      const std::shared_ptr<rosbag2_interfaces::srv::Record::Request> request,
+      const std::shared_ptr<rosbag2_interfaces::srv::Record::Response> response)
+    {
+      try {
+        if (!request->uri.empty()) {
+          storage_options_.uri = request->uri;
+        }
+        record();
+        response->return_code = 0;
+        response->error_string = "";
+      } catch (const std::exception & e) {
+        RCLCPP_ERROR(get_logger(), "Record service failed: %s", e.what());
+        response->return_code = 1;
+        response->error_string = e.what();
+      }
+    });
+
+  srv_stop_ = create_service<rosbag2_interfaces::srv::Stop>(
+    "~/stop",
+    [this](
+      const std::shared_ptr<rmw_request_id_t> /*request_header*/,
+      const std::shared_ptr<rosbag2_interfaces::srv::Stop::Request> /*request*/,
+      const std::shared_ptr<rosbag2_interfaces::srv::Stop::Response> /*response*/)
+    {
+      stop();
+    });
+
+  srv_pause_ = create_service<rosbag2_interfaces::srv::Pause>(
+    "~/pause",
+    [this](
+      const std::shared_ptr<rmw_request_id_t> /*request_header*/,
+      const std::shared_ptr<rosbag2_interfaces::srv::Pause::Request> /*request*/,
+      const std::shared_ptr<rosbag2_interfaces::srv::Pause::Response> /*response*/)
+    {
+      pause();
+    });
+
+  srv_resume_ = create_service<rosbag2_interfaces::srv::Resume>(
+    "~/resume",
+    [this](
+      const std::shared_ptr<rmw_request_id_t> /*request_header*/,
+      const std::shared_ptr<rosbag2_interfaces::srv::Resume::Request> /*request*/,
+      const std::shared_ptr<rosbag2_interfaces::srv::Resume::Response> /*response*/)
+    {
+      resume();
+    });
+
+  srv_is_paused_ = create_service<rosbag2_interfaces::srv::IsPaused>(
+    "~/is_paused",
+    [this](
+      const std::shared_ptr<rmw_request_id_t> /*request_header*/,
+      const std::shared_ptr<rosbag2_interfaces::srv::IsPaused::Request> /*request*/,
+      const std::shared_ptr<rosbag2_interfaces::srv::IsPaused::Response> response)
+    {
+      response->paused = is_paused();
+    });
 }
 
 Recorder::Recorder(
@@ -456,3 +609,5 @@ void Recorder::warn_if_new_qos_for_subscribed_topic(const std::string & topic_na
 }
 
 }  // namespace rosbag2_transport
+
+RCLCPP_COMPONENTS_REGISTER_NODE(rosbag2_transport::Recorder)

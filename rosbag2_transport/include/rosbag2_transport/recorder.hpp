@@ -30,7 +30,12 @@
 
 #include "rosbag2_cpp/writer.hpp"
 
+#include "rosbag2_interfaces/srv/is_paused.hpp"
+#include "rosbag2_interfaces/srv/pause.hpp"
+#include "rosbag2_interfaces/srv/record.hpp"
+#include "rosbag2_interfaces/srv/resume.hpp"
 #include "rosbag2_interfaces/srv/snapshot.hpp"
+#include "rosbag2_interfaces/srv/stop.hpp"
 
 #include "rosbag2_interfaces/msg/write_split_event.hpp"
 
@@ -162,7 +167,12 @@ private:
   std::string serialization_format_;
   std::unordered_map<std::string, rclcpp::QoS> topic_qos_profile_overrides_;
   std::unordered_set<std::string> topic_unknown_types_;
+  rclcpp::Service<rosbag2_interfaces::srv::IsPaused>::SharedPtr srv_is_paused_;
+  rclcpp::Service<rosbag2_interfaces::srv::Pause>::SharedPtr srv_pause_;
+  rclcpp::Service<rosbag2_interfaces::srv::Record>::SharedPtr srv_record_;
+  rclcpp::Service<rosbag2_interfaces::srv::Resume>::SharedPtr srv_resume_;
   rclcpp::Service<rosbag2_interfaces::srv::Snapshot>::SharedPtr srv_snapshot_;
+  rclcpp::Service<rosbag2_interfaces::srv::Stop>::SharedPtr srv_stop_;
   std::atomic<bool> paused_ = false;
 
   // Keyboard handler
