@@ -870,8 +870,9 @@ void MCAPStorage::write_lock_free(std::shared_ptr<const rosbag2_storage::Seriali
   if (msg->recv_timestamp < 0) {
     RCUTILS_LOG_WARN_NAMED(LOG_NAME, "Invalid message timestamp %ld", msg->recv_timestamp);
   }
-  mcap_msg.logTime = mcap::Timestamp(msg->recv_timestamp);
-  mcap_msg.publishTime = mcap::Timestamp(msg->send_timestamp);
+  // Hack to index our mcaps by publish time instead of log time
+  mcap_msg.logTime = mcap::Timestamp(msg->send_timestamp);
+  mcap_msg.publishTime = mcap::Timestamp(msg->recv_timestamp);
   mcap_msg.dataSize = msg->serialized_data->buffer_length;
   mcap_msg.data = reinterpret_cast<const std::byte *>(msg->serialized_data->buffer);
   const auto status = mcap_writer_->write(mcap_msg);
