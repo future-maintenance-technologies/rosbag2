@@ -18,8 +18,10 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <chrono>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "rosbag2_cpp/bag_events.hpp"
@@ -255,6 +257,13 @@ protected:
   bool should_split_bagfile(
     const std::chrono::time_point<std::chrono::high_resolution_clock> & current_time) const;
 
+  // Split-condition predicates, separated so keyframe-aware splitting can defer duration
+  // splits while still taking size splits immediately (bounds file growth).
+  bool should_split_by_size() const;
+  bool should_split_by_duration(
+    const std::chrono::time_point<std::chrono::high_resolution_clock> & current_time) const;
+  bool has_any_video_topic() const;
+
   // Checks if the message to be written is within accepted time range
   bool message_within_accepted_time_range(
     const rcutils_time_point_value_t current_time) const;
@@ -294,6 +303,25 @@ private:
   rcutils_time_point_value_t last_sent_timestamp_{0};
 
   bag_events::EventCallbackManager callback_manager_;
+
+  // ── Keyframe-aware split state (only used when storage_options_.split_on_keyframe) ──
+  // A duration split is due but deferred until a keyframe arrives per video stream.
+  bool split_pending_ {false};
+  // When the deferral started, to bound how long we wait if every stream is silent.
+  std::chrono::time_point<std::chrono::high_resolution_clock> split_pending_since_;
+  // Video topics that must still deliver a keyframe before they resume in the new file.
+  // Re-armed at every split; a silent (motion-gated) stream may persist here across splits.
+  std::unordered_set<std::string> topics_awaiting_keyframe_;
+
+  // Re-arms topics_awaiting_keyframe_ with every known video topic (called at each split).
+  void arm_topics_awaiting_keyframe();
+
+  // Handles the deferred keyframe-aware split for one incoming message.
+  // Returns true if the message must be dropped (undecodable pre-keyframe frame).
+  bool handle_keyframe_split(
+    const std::shared_ptr<const rosbag2_storage::SerializedBagMessage> & message,
+    const std::string & topic_type,
+    const std::chrono::time_point<std::chrono::high_resolution_clock> & message_timestamp);
 };
 
 }  // namespace writers

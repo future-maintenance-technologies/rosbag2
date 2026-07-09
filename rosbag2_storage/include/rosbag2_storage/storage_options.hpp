@@ -71,6 +71,11 @@ public:
   // Defaults to disabled.
   bool snapshot_mode = false;
 
+  // Defer a duration-triggered split until an H.264 keyframe has been seen, so
+  // each split file begins on a decodable keyframe per video stream.
+  // Defaults to disabled (exact upstream split behaviour).
+  bool split_on_keyframe = false;
+
   // Start and end time for cutting. Used in the writers to limit the range of stored messages.
   // As well as in the "ros2 bag convert" CLI aka "bag_rewrite" utility to limit the range of the
   // reading and writing messages.

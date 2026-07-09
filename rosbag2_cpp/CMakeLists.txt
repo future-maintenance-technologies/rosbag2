@@ -97,6 +97,9 @@ target_include_directories(${PROJECT_NAME}
   PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include/${PROJECT_NAME}>
+  PRIVATE
+  # Internal headers (e.g. writers/keyframe_detection.hpp) live under src/.
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
 )
 
 # Causes the visibility macros to use dllexport rather than dllimport,
@@ -217,6 +220,15 @@ if(BUILD_TESTING)
   if(TARGET test_transient_local_messages_cache)
     target_link_libraries(test_transient_local_messages_cache ${PROJECT_NAME})
   endif()
+
+  # Header-only H.264 keyframe detection; no link to the library needed.
+  ament_add_gmock(test_keyframe_detection
+    test/rosbag2_cpp/test_keyframe_detection.cpp)
+  if(TARGET test_keyframe_detection)
+    target_include_directories(test_keyframe_detection PRIVATE
+      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>)
+  endif()
+
 
   # If compiling with gcc, run this test with sanitizers enabled
   ament_add_gmock(test_ros2_message
