@@ -30,6 +30,7 @@
 #include "rosbag2_cpp/info.hpp"
 #include "rosbag2_cpp/logging.hpp"
 #include "rosbag2_cpp/service_utils.hpp"
+#include "rosbag2_cpp/writers/keyframe_detection.hpp"
 
 #include "rosbag2_storage/default_storage_id.hpp"
 #include "rosbag2_storage/storage_options.hpp"
@@ -47,6 +48,21 @@ std::string strip_parent_path(const std::string & relative_path)
 {
   return fs::path(relative_path).filename().generic_string();
 }
+
+// The one H.264 message type recorded on ARIIS. ponytail: single type is enough for
+// this fleet; promote to a configurable list in StorageOptions if a second appears.
+constexpr const char * kVideoTopicType = "foxglove_msgs/msg/CompressedVideo";
+
+bool is_video_topic_type(const std::string & type)
+{
+  return type == kVideoTopicType;
+}
+
+// Upper bound on how long a duration split is deferred waiting for a keyframe. It only
+// bites if every video stream is silent (e.g. line-scan-only rig, robot stopped); the
+// continuous area-scan cameras normally deliver a keyframe within ~1 GOP (<1 s).
+// ponytail: constant, not config; lift to StorageOptions only if a rig needs tuning.
+constexpr std::chrono::seconds kMaxSplitDeferral{5};
 }  // namespace
 
 SequentialWriter::SequentialWriter(
@@ -389,6 +405,82 @@ void SequentialWriter::split_bagfile()
   (void)split_bagfile_local();
 }
 
+void SequentialWriter::arm_topics_awaiting_keyframe()
+{
+  // Every video topic must start the new file on a keyframe. Re-arming clears then
+  // re-inserts all video topics; a still-silent stream simply stays "awaiting".
+  topics_awaiting_keyframe_.clear();
+  for (const auto & [name, info] : topics_names_to_info_) {
+    if (is_video_topic_type(info.topic_metadata.type)) {
+      topics_awaiting_keyframe_.insert(name);
+    }
+  }
+}
+
+bool SequentialWriter::handle_keyframe_split(
+  const std::shared_ptr<const rosbag2_storage::SerializedBagMessage> & message,
+  const std::string & topic_type,
+  const std::chrono::time_point<std::chrono::high_resolution_clock> & message_timestamp)
+{
+  const bool is_video = is_video_topic_type(topic_type);
+  bool is_keyframe = false;
+  if (is_video && message->serialized_data) {
+    is_keyframe = compressed_video_has_idr(
+      message->serialized_data->buffer, message->serialized_data->buffer_length);
+  }
+
+  // 1) No split in flight: detect whether one is now due.
+  if (!split_pending_) {
+    if (should_split_by_size()) {
+      // Size splits are never deferred (bounds file growth if a stream stalls).
+      split_bagfile();
+      metadata_.files.back().starting_time = message_timestamp;
+      arm_topics_awaiting_keyframe();
+    } else if (should_split_by_duration(message_timestamp)) {
+      if (!has_any_video_topic()) {
+        // Nothing to wait for — behave like a normal split.
+        split_bagfile();
+        metadata_.files.back().starting_time = message_timestamp;
+      } else {
+        // Defer: keep writing to the current (old) file until a keyframe arrives. The
+        // encoders emit PTP-aligned keyframe clusters, so the next keyframe is a cluster
+        // leader and the cut lands cleanly on it.
+        split_pending_ = true;
+        split_pending_since_ = message_timestamp;
+      }
+    }
+  }
+
+  // 2) Split pending: cut on the first keyframe (the synchronized cluster's leader), or
+  //    on timeout if every video stream stayed silent. The keyframe then leads the new
+  //    file; the remaining cluster keyframes lead their streams as they arrive.
+  if (split_pending_) {
+    const bool timed_out = (message_timestamp - split_pending_since_) > kMaxSplitDeferral;
+    if (is_keyframe || timed_out) {
+      split_bagfile();
+      metadata_.files.back().starting_time = message_timestamp;
+      split_pending_ = false;
+      arm_topics_awaiting_keyframe();
+    }
+    // else: still deferring — fall through; message is written to the old file.
+  }
+
+  // 3) Post-cut gating: until a stream delivers its first keyframe, drop its frames so the
+  //    new file begins decodably. With forced+PTP-synced keyframes this drops nothing in
+  //    the common case; it is the guard for stragglers and motion-gated (line-scan) streams.
+  if (!topics_awaiting_keyframe_.empty()) {
+    const auto it = topics_awaiting_keyframe_.find(message->topic_name);
+    if (it != topics_awaiting_keyframe_.end()) {
+      if (is_keyframe) {
+        topics_awaiting_keyframe_.erase(it);
+      } else {
+        return true;  // undecodable pre-keyframe frame — drop
+      }
+    }
+  }
+  return false;
+}
+
 void SequentialWriter::write(std::shared_ptr<const rosbag2_storage::SerializedBagMessage> message)
 {
   if (!is_open_) {
@@ -420,9 +512,17 @@ void SequentialWriter::write(std::shared_ptr<const rosbag2_storage::SerializedBa
     is_first_message_ = false;
   }
 
-  if (!storage_options_.snapshot_mode && should_split_bagfile(message_timestamp)) {
-    split_bagfile();
-    metadata_.files.back().starting_time = message_timestamp;
+  if (!storage_options_.snapshot_mode) {
+    if (storage_options_.split_on_keyframe) {
+      if (handle_keyframe_split(
+          message, topic_information_ptr->topic_metadata.type, message_timestamp))
+      {
+        return;  // undecodable pre-keyframe frame — drop it
+      }
+    } else if (should_split_bagfile(message_timestamp)) {
+      split_bagfile();
+      metadata_.files.back().starting_time = message_timestamp;
+    }
   }
 
   metadata_.starting_time = std::min(metadata_.starting_time, message_timestamp);
@@ -470,32 +570,46 @@ SequentialWriter::get_writeable_message(
   return converter_ ? converter_->convert(message) : message;
 }
 
+bool SequentialWriter::should_split_by_size() const
+{
+  if (storage_options_.max_bagfile_size ==
+    rosbag2_storage::storage_interfaces::MAX_BAGFILE_SIZE_NO_SPLIT)
+  {
+    return false;
+  }
+  // TODO(morlov): consider cached messages size in splitting decision. Right now we only consider
+  //  the size of already written messages in storage. Add message_cache_->get_current_size() API.
+  return storage_->get_bagfile_size() >= storage_options_.max_bagfile_size;
+}
+
+bool SequentialWriter::should_split_by_duration(
+  const std::chrono::time_point<std::chrono::high_resolution_clock> & current_time) const
+{
+  if (storage_options_.max_bagfile_duration ==
+    rosbag2_storage::storage_interfaces::MAX_BAGFILE_DURATION_NO_SPLIT)
+  {
+    return false;
+  }
+  const auto max_duration_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+    std::chrono::seconds(storage_options_.max_bagfile_duration));
+  return (current_time - metadata_.files.back().starting_time) > max_duration_ns;
+}
+
 bool SequentialWriter::should_split_bagfile(
   const std::chrono::time_point<std::chrono::high_resolution_clock> & current_time) const
 {
-  // Assume we aren't splitting
-  bool should_split = false;
+  return should_split_by_size() || should_split_by_duration(current_time);
+}
 
-  // Splitting by size
-  if (storage_options_.max_bagfile_size !=
-    rosbag2_storage::storage_interfaces::MAX_BAGFILE_SIZE_NO_SPLIT)
-  {
-    // TODO(morlov): consider cached messages size in splitting decision. Right now we only consider
-    //  the size of already written messages in storage. Add message_cache_->get_current_size() API.
-    should_split = (storage_->get_bagfile_size() >= storage_options_.max_bagfile_size);
+bool SequentialWriter::has_any_video_topic() const
+{
+  for (const auto & [name, info] : topics_names_to_info_) {
+    (void)name;
+    if (is_video_topic_type(info.topic_metadata.type)) {
+      return true;
+    }
   }
-
-  // Splitting by time
-  if (storage_options_.max_bagfile_duration !=
-    rosbag2_storage::storage_interfaces::MAX_BAGFILE_DURATION_NO_SPLIT)
-  {
-    auto max_duration_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-      std::chrono::seconds(storage_options_.max_bagfile_duration));
-    should_split = should_split ||
-      ((current_time - metadata_.files.back().starting_time) > max_duration_ns);
-  }
-
-  return should_split;
+  return false;
 }
 
 bool SequentialWriter::message_within_accepted_time_range(
