@@ -305,22 +305,62 @@ private:
   bag_events::EventCallbackManager callback_manager_;
 
   // ── Keyframe-aware split state (only used when storage_options_.split_on_keyframe) ──
-  // A duration split is due but deferred until a keyframe arrives per video stream.
-  bool split_pending_ {false};
-  // When the deferral started, to bound how long we wait if every stream is silent.
-  std::chrono::time_point<std::chrono::high_resolution_clock> split_pending_since_;
   // Video topics that must still deliver a keyframe before they resume in the new file.
-  // Re-armed at every split; a silent (motion-gated) stream may persist here across splits.
+  // Armed at each split for any topic the look-ahead buffer couldn't already place on a
+  // keyframe (e.g. a genuinely silent/motion-gated stream); a still-silent stream may persist
+  // here across splits.
   std::unordered_set<std::string> topics_awaiting_keyframe_;
+
+  // One message held back from immediate commit while a duration split is imminent.
+  struct BufferedSplitMessage
+  {
+    std::shared_ptr<const rosbag2_storage::SerializedBagMessage> message;
+    std::chrono::time_point<std::chrono::high_resolution_clock> timestamp;
+    bool is_keyframe {false};
+  };
+
+  // True once we've started buffering messages instead of committing them immediately,
+  // because a duration split is within keyframe_lookback_sec of being due. Buffering (rather
+  // than committing on arrival) is what lets the writer see an entire upcoming keyframe
+  // cluster before deciding exactly where the file boundary goes — so every video topic can
+  // start the new file on its own keyframe with zero dropped frames and zero duplicated
+  // messages, regardless of which message happens to cross the duration deadline first.
+  bool buffering_for_split_ {false};
+  std::vector<BufferedSplitMessage> split_lookahead_buffer_;
+  // Running total of split_lookahead_buffer_'s serialized message bytes, checked against
+  // kMaxLookaheadBufferBytes so a stuck/never-arriving keyframe cluster can't grow the buffer
+  // without bound.
+  size_t split_lookahead_buffer_bytes_ {0};
 
   // Re-arms topics_awaiting_keyframe_ with every known video topic (called at each split).
   void arm_topics_awaiting_keyframe();
 
-  // Handles the deferred keyframe-aware split for one incoming message.
-  // Returns true if the message must be dropped (undecodable pre-keyframe frame).
+  // Handles the keyframe-aware split for one incoming message. Returns true if the caller
+  // must not commit `message` itself right now: either it was buffered for later (see
+  // buffering_for_split_), or it's an undecodable pre-keyframe frame that must be dropped.
   bool handle_keyframe_split(
     const std::shared_ptr<const rosbag2_storage::SerializedBagMessage> & message,
     const std::string & topic_type,
+    const std::chrono::time_point<std::chrono::high_resolution_clock> & message_timestamp);
+
+  // Appends one message to split_lookahead_buffer_ and, once duration is due or the buffer's
+  // size cap is hit, calls finalize_buffered_split().
+  void buffer_message_for_split(
+    const std::shared_ptr<const rosbag2_storage::SerializedBagMessage> & message,
+    const std::chrono::time_point<std::chrono::high_resolution_clock> & message_timestamp,
+    bool is_keyframe);
+
+  // Called once a pending duration split's deadline is reached (or the look-ahead buffer's
+  // size cap forces an early cut). Finds each video topic's most recently-buffered keyframe,
+  // places the file cut immediately before the earliest of them, and commits the buffer:
+  // everything before the cut to the old file, then split_bagfile(), then everything from the
+  // cut onward to the new file.
+  void finalize_buffered_split();
+
+  // Applies the metadata bookkeeping + actual storage write shared by both the normal write()
+  // path and the buffered-message replay path in finalize_buffered_split().
+  void commit_message(
+    const std::shared_ptr<const rosbag2_storage::SerializedBagMessage> & message,
     const std::chrono::time_point<std::chrono::high_resolution_clock> & message_timestamp);
 };
 

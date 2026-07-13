@@ -35,6 +35,7 @@ Node convert<rosbag2_storage::StorageOptions>::encode(
   node["storage_config_uri"] = storage_options.storage_config_uri;
   node["snapshot_mode"] = storage_options.snapshot_mode;
   node["split_on_keyframe"] = storage_options.split_on_keyframe;
+  node["keyframe_lookback_sec"] = storage_options.keyframe_lookback_sec;
   node["start_time_ns"] = storage_options.start_time_ns;
   node["end_time_ns"] = storage_options.end_time_ns;
   node["custom_data"] = storage_options.custom_data;
@@ -58,6 +59,8 @@ bool convert<rosbag2_storage::StorageOptions>::decode(
   optional_assign<std::string>(node, "storage_config_uri", storage_options.storage_config_uri);
   optional_assign<bool>(node, "snapshot_mode", storage_options.snapshot_mode);
   optional_assign<bool>(node, "split_on_keyframe", storage_options.split_on_keyframe);
+  optional_assign<double>(
+    node, "keyframe_lookback_sec", storage_options.keyframe_lookback_sec);
   optional_assign<int64_t>(node, "start_time_ns", storage_options.start_time_ns);
   optional_assign<int64_t>(node, "end_time_ns", storage_options.end_time_ns);
   using KEY_VALUE_MAP = std::unordered_map<std::string, std::string>;

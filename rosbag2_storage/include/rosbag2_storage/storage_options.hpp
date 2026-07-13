@@ -76,6 +76,22 @@ public:
   // Defaults to disabled (exact upstream split behaviour).
   bool split_on_keyframe = false;
 
+  // How many seconds before a duration split is due to start buffering incoming messages
+  // instead of writing them immediately, so the whole upcoming keyframe cluster is visible
+  // before any of it is committed — this is what lets the writer place the file cut exactly
+  // before the cluster with zero dropped frames and zero duplicated messages, regardless of
+  // exactly which message happens to cross the duration deadline first.
+  // Must be at least as long as the video encoders' forced-keyframe recurrence period; only
+  // used when split_on_keyframe is enabled.
+  //
+  // NOTE: this value is coupled to whatever recording node forces the keyframes (e.g. ARIIS's
+  // image_compressor_node `keyframe_interval_sec` param) but there is no automatic enforcement
+  // of that relationship on either side. If the two drift out of sync (this value ends up
+  // shorter than the actual recurrence period), the look-ahead buffer simply won't contain a
+  // full cluster as often — no crash, just a silent partial regression back toward the old
+  // per-stream "wait for the next keyframe" behaviour. Keep them in sync by hand.
+  double keyframe_lookback_sec = 1.0;
+
   // Start and end time for cutting. Used in the writers to limit the range of stored messages.
   // As well as in the "ros2 bag convert" CLI aka "bag_rewrite" utility to limit the range of the
   // reading and writing messages.

@@ -488,6 +488,9 @@ get_storage_options_from_node_params(rclcpp::Node & node)
   storage_options.split_on_keyframe =
     node.declare_parameter<bool>("storage.split_on_keyframe", false);
 
+  storage_options.keyframe_lookback_sec =
+    node.declare_parameter<double>("storage.keyframe_lookback_sec", 1.0);
+
   auto list_of_key_value_strings = node.declare_parameter<std::vector<std::string>>(
     "storage.custom_data",
     std::vector<std::string>());
