@@ -543,16 +543,6 @@ bool SequentialWriter::handle_keyframe_split(
     const auto lookahead_start_ns = lookback_ns >= max_duration_ns ?
       std::chrono::nanoseconds(0) : max_duration_ns - lookback_ns;
     if ((message_timestamp - metadata_.files.back().starting_time) >= lookahead_start_ns) {
-      // DIAGNOSTIC (temporary): who/what triggered entering the look-ahead window, and
-      // exactly how old the file was at that moment vs. the computed threshold.
-      const auto file_age_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        message_timestamp - metadata_.files.back().starting_time).count();
-      const auto lookahead_start_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        lookahead_start_ns).count();
-      ROSBAG2_CPP_LOG_INFO(
-        "[keyframe-split] entering look-ahead window: triggered by topic='%s' file_age=%ldms "
-        "(threshold=%ldms)",
-        message->topic_name.c_str(), file_age_ms, lookahead_start_ms);
       buffering_for_split_ = true;
       split_lookahead_buffer_.clear();
       split_lookahead_buffer_bytes_ = 0;
@@ -660,26 +650,6 @@ void SequentialWriter::finalize_buffered_split()
   for (auto it = split_lookahead_buffer_.rbegin(); it != split_lookahead_buffer_.rend(); ++it) {
     if (it->is_keyframe && it->timestamp <= cut_time + kClusterTolerance) {
       topic_cut_time.try_emplace(it->message->topic_name, it->timestamp);
-    }
-  }
-
-  // DIAGNOSTIC (temporary): what the look-ahead buffer actually saw for each video topic,
-  // and the buffer's own span, so a topic that falls back to post-cut gating can be told
-  // apart from one whose keyframe was genuinely captured and used.
-  {
-    const auto span_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-      split_lookahead_buffer_.back().timestamp - split_lookahead_buffer_.front().timestamp)
-      .count();
-    ROSBAG2_CPP_LOG_INFO(
-      "[keyframe-split] finalizing: buffer has %zu message(s) spanning %ldms, "
-      "%zu video topic(s) resolved",
-      split_lookahead_buffer_.size(), span_ms, topic_cut_time.size());
-    for (const auto & [name, time] : topic_cut_time) {
-      const auto age_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        split_lookahead_buffer_.back().timestamp - time).count();
-      ROSBAG2_CPP_LOG_INFO(
-        "[keyframe-split]   resolved topic='%s' keyframe_age=%ldms before finalize",
-        name.c_str(), age_ms);
     }
   }
 

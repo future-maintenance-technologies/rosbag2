@@ -1,0 +1,28 @@
+[0.000000] (-) TimerEvent: {}
+[0.000193] (-) JobUnselected: {'identifier': 'liblz4_vendor'}
+[0.000228] (-) JobUnselected: {'identifier': 'mcap_vendor'}
+[0.000247] (-) JobUnselected: {'identifier': 'ros2bag'}
+[0.000260] (-) JobUnselected: {'identifier': 'rosbag2'}
+[0.000272] (-) JobUnselected: {'identifier': 'rosbag2_compression'}
+[0.000284] (-) JobUnselected: {'identifier': 'rosbag2_compression_zstd'}
+[0.000295] (-) JobUnselected: {'identifier': 'rosbag2_examples_cpp'}
+[0.000305] (-) JobUnselected: {'identifier': 'rosbag2_examples_py'}
+[0.000316] (-) JobUnselected: {'identifier': 'rosbag2_interfaces'}
+[0.000326] (-) JobUnselected: {'identifier': 'rosbag2_performance_benchmarking'}
+[0.000337] (-) JobUnselected: {'identifier': 'rosbag2_performance_benchmarking_msgs'}
+[0.000347] (-) JobUnselected: {'identifier': 'rosbag2_py'}
+[0.000358] (-) JobUnselected: {'identifier': 'rosbag2_storage'}
+[0.000368] (-) JobUnselected: {'identifier': 'rosbag2_storage_default_plugins'}
+[0.000378] (-) JobUnselected: {'identifier': 'rosbag2_storage_mcap'}
+[0.000389] (-) JobUnselected: {'identifier': 'rosbag2_storage_sqlite3'}
+[0.000399] (-) JobUnselected: {'identifier': 'rosbag2_test_common'}
+[0.000409] (-) JobUnselected: {'identifier': 'rosbag2_test_msgdefs'}
+[0.000419] (-) JobUnselected: {'identifier': 'rosbag2_tests'}
+[0.000436] (-) JobUnselected: {'identifier': 'rosbag2_transport'}
+[0.000446] (-) JobUnselected: {'identifier': 'shared_queues_vendor'}
+[0.000457] (-) JobUnselected: {'identifier': 'sqlite3_vendor'}
+[0.000467] (-) JobUnselected: {'identifier': 'zstd_vendor'}
+[0.000480] (rosbag2_cpp) JobQueued: {'identifier': 'rosbag2_cpp', 'dependencies': OrderedDict({'liblz4_vendor': '/home/fmt/.no-mistakes/worktrees/b8e3b0e906af/01KXF3EBXC00B6ZS69VCQBAJA8/install/liblz4_vendor', 'rosbag2_test_common': '/home/fmt/.no-mistakes/worktrees/b8e3b0e906af/01KXF3EBXC00B6ZS69VCQBAJA8/install/rosbag2_test_common', 'rosbag2_test_msgdefs': '/home/fmt/.no-mistakes/worktrees/b8e3b0e906af/01KXF3EBXC00B6ZS69VCQBAJA8/install/rosbag2_test_msgdefs', 'sqlite3_vendor': '/home/fmt/.no-mistakes/worktrees/b8e3b0e906af/01KXF3EBXC00B6ZS69VCQBAJA8/install/sqlite3_vendor', 'zstd_vendor': '/home/fmt/.no-mistakes/worktrees/b8e3b0e906af/01KXF3EBXC00B6ZS69VCQBAJA8/install/zstd_vendor', 'mcap_vendor': '/home/fmt/.no-mistakes/worktrees/b8e3b0e906af/01KXF3EBXC00B6ZS69VCQBAJA8/install/mcap_vendor', 'rosbag2_storage': '/home/fmt/.no-mistakes/worktrees/b8e3b0e906af/01KXF3EBXC00B6ZS69VCQBAJA8/install/rosbag2_storage', 'rosbag2_storage_mcap': '/home/fmt/.no-mistakes/worktrees/b8e3b0e906af/01KXF3EBXC00B6ZS69VCQBAJA8/install/rosbag2_storage_mcap', 'rosbag2_storage_sqlite3': '/home/fmt/.no-mistakes/worktrees/b8e3b0e906af/01KXF3EBXC00B6ZS69VCQBAJA8/install/rosbag2_storage_sqlite3', 'rosbag2_storage_default_plugins': '/home/fmt/.no-mistakes/worktrees/b8e3b0e906af/01KXF3EBXC00B6ZS69VCQBAJA8/install/rosbag2_storage_default_plugins'})}
+[0.000512] (rosbag2_cpp) JobStarted: {'identifier': 'rosbag2_cpp'}
+[0.008236] (rosbag2_cpp) JobEnded: {'identifier': 'rosbag2_cpp', 'rc': 1}
+[0.018494] (-) EventReactorShutdown: {}
