@@ -32,7 +32,7 @@ void append_nal(std::vector<uint8_t> & v, uint8_t type, bool three_byte = false)
   }
   v.insert(v.end(), {0, 0, 1});
   v.push_back(type & 0x1F);  // nal_ref_idc 0 for brevity; type in low bits
-  v.push_back(0xAB);         // one byte of payload
+  v.push_back(0xAB);
 }
 
 // Build a minimal little-endian CDR CompressedVideo buffer wrapping `payload`.
