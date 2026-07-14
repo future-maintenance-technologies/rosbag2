@@ -227,11 +227,9 @@ private:
 
   bag_events::EventCallbackManager callback_manager_;
 
-  // ── Keyframe-aware split state (only used when storage_options_.split_on_keyframe) ──
-  // Video topics that must still deliver a keyframe before they resume in the new file.
-  // Armed at each split for any topic the look-ahead buffer couldn't already place on a
-  // keyframe (e.g. a genuinely silent/motion-gated stream); a still-silent stream may persist
-  // here across splits.
+  // Keyframe-aware split state (used only when storage_options_.split_on_keyframe).
+
+  // Video topics still waiting to deliver a keyframe before resuming in the new file.
   std::unordered_set<std::string> topics_awaiting_keyframe_;
 
   // One message held back from immediate commit while a duration split is imminent.
@@ -242,25 +240,20 @@ private:
     bool is_keyframe {false};
   };
 
-  // True once we've started buffering messages instead of committing them immediately,
-  // because a duration split is within keyframe_lookback_sec of being due. Buffering (rather
-  // than committing on arrival) is what lets the writer see an entire upcoming keyframe
-  // cluster before deciding exactly where the file boundary goes — so every video topic can
-  // start the new file on its own keyframe with zero dropped frames and zero duplicated
-  // messages, regardless of which message happens to cross the duration deadline first.
+  // True once a duration split is within keyframe_lookback_sec of being due and we've started
+  // buffering instead of committing, so the whole upcoming keyframe cluster is visible before
+  // the cut point is chosen.
   bool buffering_for_split_ {false};
   std::vector<BufferedSplitMessage> split_lookahead_buffer_;
-  // Running total of split_lookahead_buffer_'s serialized message bytes, checked against
-  // kMaxLookaheadBufferBytes so a stuck/never-arriving keyframe cluster can't grow the buffer
-  // without bound.
+  // Running total of split_lookahead_buffer_'s bytes, capped at kMaxLookaheadBufferBytes so a
+  // stuck keyframe cluster can't grow the buffer without bound.
   size_t split_lookahead_buffer_bytes_ {0};
 
   // Re-arms topics_awaiting_keyframe_ with every known video topic (called at each split).
   void arm_topics_awaiting_keyframe();
 
   // Handles the keyframe-aware split for one incoming message. Returns true if the caller
-  // must not commit `message` itself right now: either it was buffered for later (see
-  // buffering_for_split_), or it's an undecodable pre-keyframe frame that must be dropped.
+  // must not commit it now (buffered for later, or dropped as undecodable pre-keyframe).
   bool handle_keyframe_split(
     const std::shared_ptr<const rosbag2_storage::SerializedBagMessage> & message,
     const std::string & topic_type,
@@ -273,11 +266,9 @@ private:
     const std::chrono::time_point<std::chrono::high_resolution_clock> & message_timestamp,
     bool is_keyframe);
 
-  // Called once a pending duration split's deadline is reached (or the look-ahead buffer's
-  // size cap forces an early cut). Finds each video topic's most recently-buffered keyframe,
-  // places the file cut immediately before the earliest of them, and commits the buffer:
-  // everything before the cut to the old file, then split_bagfile(), then everything from the
-  // cut onward to the new file.
+  // Called when a pending duration split is due (or the buffer's size cap forces an early
+  // cut): finds each video topic's latest buffered keyframe, cuts immediately before the
+  // earliest of them, and commits the buffer across the split.
   void finalize_buffered_split();
 
   // Applies the metadata bookkeeping + actual storage write shared by both the normal write()

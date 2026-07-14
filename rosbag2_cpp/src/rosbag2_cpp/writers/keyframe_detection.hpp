@@ -19,17 +19,15 @@
 #include <cstdint>
 
 // Self-contained H.264 keyframe detection for foxglove_msgs/msg/CompressedVideo.
-// Header-only and free of ROS/rcutils dependencies so it can be unit-tested in
-// isolation and included directly by the writer. See keyframe-aware split.
+// Header-only so it can be unit-tested without ROS/rcutils dependencies.
 
 namespace rosbag2_cpp
 {
 namespace writers
 {
 
-/// True if the Annex-B byte stream contains an IDR slice (a keyframe).
-/// Scans for start codes (00 00 01 / 00 00 00 01); a NAL is an IDR when its
-/// type (nal_header & 0x1F) == 5. Early-outs on the first IDR.
+/// True if the Annex-B byte stream contains an IDR slice (a keyframe): scans for start
+/// codes and checks (nal_header & 0x1F) == 5, early-outing on the first match.
 inline bool nal_stream_has_idr(const uint8_t * d, size_t len)
 {
   if (d == nullptr) {
@@ -43,23 +41,14 @@ inline bool nal_stream_has_idr(const uint8_t * d, size_t len)
       if (h < len && (d[h] & 0x1F) == 5) {
         return true;
       }
-      i = h;  // skip past this start code
+      i = h;
     }
   }
   return false;
 }
 
-/// True if a CDR-serialized foxglove_msgs/msg/CompressedVideo carries an IDR.
-/// Skips over the fixed/preceding fields to locate the `data` blob without a
-/// full ROS deserialization, then NAL-scans it. Every read is bounds-checked;
-/// a malformed or truncated buffer returns false rather than reading OOB.
-///
-/// CDR layout (little- or big-endian per the encapsulation header):
-///   [0..3] encapsulation header (alignment origin resets after it)
-///   Time timestamp : int32 sec, uint32 nanosec   (8 bytes)
-///   string frame_id: uint32 len (4-aligned) + len bytes (incl. NUL)
-///   uint8[] data   : uint32 len (4-aligned) + len bytes   <-- scanned
-///   string format  : ignored
+/// True if a CDR-serialized foxglove_msgs/msg/CompressedVideo carries an IDR. Manually walks
+/// the CDR layout with bounds-checked reads; malformed/truncated input returns false.
 inline bool compressed_video_has_idr(const uint8_t * cdr, size_t n)
 {
   if (cdr == nullptr || n < 4) {

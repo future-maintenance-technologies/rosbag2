@@ -49,8 +49,8 @@ std::string strip_parent_path(const std::string & relative_path)
   return fs::path(relative_path).filename().generic_string();
 }
 
-// The one H.264 message type recorded on ARIIS. ponytail: single type is enough for
-// this fleet; promote to a configurable list in StorageOptions if a second appears.
+// The only video message type currently supported; promote to a configurable list in
+// StorageOptions if a second type is needed.
 constexpr const char * kVideoTopicType = "foxglove_msgs/msg/CompressedVideo";
 
 bool is_video_topic_type(const std::string & type)
@@ -58,10 +58,8 @@ bool is_video_topic_type(const std::string & type)
   return type == kVideoTopicType;
 }
 
-// Upper bound on the keyframe-aware split look-ahead buffer, so a stalled/never-arriving
-// keyframe cluster (or an unexpectedly high-rate set of topics) can't grow it without bound.
-// Crossing this cuts immediately with whatever's been resolved so far, same as a normal
-// duration-triggered finalize.
+// Upper bound on the look-ahead buffer so a stalled keyframe cluster can't grow it without
+// bound; crossing it cuts immediately with whatever's been resolved so far.
 constexpr size_t kMaxLookaheadBufferBytes = 1024ULL * 1024 * 1024;  // 1 GiB
 }  // namespace
 
@@ -166,11 +164,8 @@ void SequentialWriter::open(
   }
 
   if (storage_options_.split_on_keyframe) {
-    // A size-triggered split cuts immediately, bypassing the keyframe look-ahead buffer
-    // entirely (see handle_keyframe_split): once buffering starts, size is not re-checked
-    // until the buffer is finalized. Deferring a size split to wait for a keyframe would
-    // defeat max_bagfile_size's actual purpose — bounding file growth if a stream stalls —
-    // so the two are mutually exclusive rather than silently interacting.
+    // split_on_keyframe and max_bagfile_size are mutually exclusive: deferring a size split
+    // to wait for a keyframe would defeat max_bagfile_size's purpose of bounding file growth.
     if (storage_options_.max_bagfile_size !=
       rosbag2_storage::storage_interfaces::MAX_BAGFILE_SIZE_NO_SPLIT)
     {
@@ -253,13 +248,8 @@ void SequentialWriter::close()
     return;  // The writer is not open
   }
 
-  // Flush anything still held by the keyframe-aware split look-ahead buffer. Those messages
-  // were deliberately not yet committed anywhere (see buffer_message_for_split) while waiting
-  // to see the rest of an upcoming keyframe cluster - if we're closing now, there's no more
-  // cluster to wait for, so commit them all to the currently-open file rather than silently
-  // losing whatever was buffered. Must happen before
-  // flush_cache_update_metadata_and_close_storage() below, since commit_message() updates the
-  // metadata that call finalizes.
+  // Flush any messages still held by the look-ahead buffer so none are silently lost on close;
+  // must run before flush_cache_update_metadata_and_close_storage() finalizes the metadata.
   if (buffering_for_split_) {
     for (const auto & buffered : split_lookahead_buffer_) {
       commit_message(buffered.message, buffered.timestamp);
@@ -531,11 +521,8 @@ bool SequentialWriter::handle_keyframe_split(
     metadata_.files.back().starting_time = message_timestamp;
     arm_topics_awaiting_keyframe();
   } else if (has_any_video_topic() && duration_split_configured) {
-    // Start buffering keyframe_lookback_sec before the nominal duration deadline, so an
-    // entire keyframe cluster (which recurs at least that often) is guaranteed to already be
-    // in the buffer by the time duration is actually exceeded — regardless of exactly which
-    // message happens to cross that instant first. This is what lets the eventual cut land
-    // immediately before the cluster with zero dropped frames and zero duplicated messages.
+    // Start buffering keyframe_lookback_sec before the duration deadline, so a full keyframe
+    // cluster is already buffered by the time duration is exceeded, wherever the cut lands.
     const auto max_duration_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
       std::chrono::seconds(storage_options_.max_bagfile_duration));
     const auto lookback_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -550,15 +537,13 @@ bool SequentialWriter::handle_keyframe_split(
       return true;
     }
   } else if (should_split_by_duration(message_timestamp)) {
-    // No video topics at all — behave like a normal split.
+    // No video topics at all - behave like a normal split.
     split_bagfile();
     metadata_.files.back().starting_time = message_timestamp;
   }
 
-  // Post-cut gating: until a stream delivers its first keyframe, drop its frames so the new
-  // file begins decodably. Topics the look-ahead buffer already placed on a keyframe are
-  // pre-cleared from this set in finalize_buffered_split(); this remains as the guard for
-  // stragglers and motion-gated (line-scan) streams that had no recent keyframe at all.
+  // Post-cut gating: drop a stream's frames until its first keyframe, so the new file begins
+  // decodably. Topics already placed on a keyframe by finalize_buffered_split() are pre-cleared.
   if (!topics_awaiting_keyframe_.empty()) {
     const auto it = topics_awaiting_keyframe_.find(message->topic_name);
     if (it != topics_awaiting_keyframe_.end()) {
@@ -566,10 +551,10 @@ bool SequentialWriter::handle_keyframe_split(
         topics_awaiting_keyframe_.erase(it);
       } else {
         ROSBAG2_CPP_LOG_WARN(
-          "[keyframe-split] dropping undecodable pre-keyframe message on topic='%s' — still "
+          "[keyframe-split] dropping undecodable pre-keyframe message on topic='%s' - still "
           "awaiting its first keyframe since the last split",
           message->topic_name.c_str());
-        return true;  // undecodable pre-keyframe frame — drop
+        return true;  // undecodable pre-keyframe frame - drop
       }
     }
   }
@@ -599,11 +584,8 @@ void SequentialWriter::buffer_message_for_split(
 
 void SequentialWriter::finalize_buffered_split()
 {
-  // Pass 1: each video topic's single most-recently-buffered keyframe, anywhere in the
-  // buffer. keyframe_lookback_sec can span more than one keyframe_interval_sec (by design,
-  // for margin), so a topic can legitimately have two keyframes in the buffer a full cycle
-  // apart — this may find one from a later cycle than the synchronized cluster the *other*
-  // topics are about to cut on.
+  // Pass 1: each video topic's most-recently-buffered keyframe, which may be a cycle later
+  // than the cluster other topics are about to cut on (pass 2 below resolves that).
   std::unordered_map<std::string, std::chrono::time_point<std::chrono::high_resolution_clock>>
   latest_keyframe;
   for (auto it = split_lookahead_buffer_.rbegin(); it != split_lookahead_buffer_.rend(); ++it) {
@@ -612,38 +594,17 @@ void SequentialWriter::finalize_buffered_split()
     }
   }
 
-  // The file boundary: immediately before the earliest of those keyframes — the synchronized
-  // cluster's own instant. A topic with no keyframe anywhere in the buffer (genuinely silent)
-  // has no entry here and falls back to this same global cut, same as every other non-video
-  // topic; it's gated below until it delivers a keyframe of its own.
-  //
-  // If no video topic produced a keyframe anywhere in the buffer, there's no cluster to cut
-  // before — fall back to the buffer's *last* (most recent) timestamp, i.e. cut right now,
-  // same as the pre-buffering behaviour. Using the buffer's *first* timestamp here instead
-  // (whenever look-ahead buffering happened to start, up to keyframe_lookback_sec earlier)
-  // would always beat every real keyframe time in the min() below, permanently dragging the
-  // new file's starting_time — and every non-video message since buffering began — back to
-  // that point instead of the actual cluster instant.
+  // Cut immediately before the earliest keyframe. With none at all, fall back to the
+  // buffer's *last* timestamp, not its first, which would drag starting_time far back.
   auto cut_time = split_lookahead_buffer_.back().timestamp;
   for (const auto & [name, time] : latest_keyframe) {
     (void)name;
     cut_time = std::min(cut_time, time);
   }
 
-  // Pass 2: re-resolve each topic against the cluster instant just found, rather than using
-  // whatever pass 1 happened to grab. A topic whose *overall* latest keyframe (pass 1) is
-  // from a later cycle than cut_time must not lead with that one — its messages between
-  // cut_time and that later keyframe would then get stranded in the *old* file (since they're
-  // provably before that topic's own boundary), silently reproducing the very "wait a full
-  // cycle" gap this buffer exists to eliminate, even though the correct, cluster-matching
-  // keyframe (like every other topic's) was sitting right there in the buffer all along.
-  // Small tolerance absorbs ordinary cluster jitter (observed worst case: 19ms) while staying
-  // far short of a full keyframe_interval_sec (typically ~1s) away, so it can't cross into
-  // the next cycle. Also bounds how far a topic's own boundary can land after cut_time, which
-  // in turn bounds how much of the *old* file's tail can carry timestamps past the *new*
-  // file's declared start (see the file-time-range-overlap discussion for why that can happen
-  // at all) — wider than the observed jitter needs, trading a larger overlap bound for more
-  // headroom against jitter this rig hasn't shown yet.
+  // Pass 2: re-resolve each topic's boundary near cut_time instead of using pass 1's overall
+  // latest keyframe, or messages before a later keyframe would get stranded in the old file.
+  // kClusterTolerance absorbs cluster jitter while staying well under keyframe_interval_sec.
   constexpr std::chrono::milliseconds kClusterTolerance{250};
   std::unordered_map<std::string, std::chrono::time_point<std::chrono::high_resolution_clock>>
   topic_cut_time;
@@ -685,10 +646,10 @@ void SequentialWriter::finalize_buffered_split()
       commit_message(buffered.message, buffered.timestamp);
     } else {
       ROSBAG2_CPP_LOG_WARN(
-        "[keyframe-split] dropping undecodable pre-keyframe message on topic='%s' — no "
+        "[keyframe-split] dropping undecodable pre-keyframe message on topic='%s' - no "
         "keyframe for it in the look-ahead buffer, still awaiting its first one",
         buffered.message->topic_name.c_str());
-      // undecodable pre-keyframe frame for a still-silent topic — drop.
+      // undecodable pre-keyframe frame for a still-silent topic - drop.
     }
   }
 

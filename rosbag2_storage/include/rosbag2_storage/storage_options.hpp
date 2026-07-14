@@ -33,6 +33,7 @@ public:
 
   // The maximum size a bagfile can be, in bytes, before it is split.
   // A value of 0 indicates that bagfile splitting will not be used.
+  // Mutually exclusive with split_on_keyframe (open() throws if both are set).
   uint64_t max_bagfile_size = 0;
 
   // The maximum duration a bagfile can be, in seconds, before it is split.
@@ -56,25 +57,13 @@ public:
   // Defaults to disabled.
   bool snapshot_mode = false;
 
-  // Defer a duration-triggered split until an H.264 keyframe has been seen, so
-  // each split file begins on a decodable keyframe per video stream.
-  // Defaults to disabled (exact upstream split behaviour).
+  // Defer a duration-triggered split until an H.264 keyframe has been seen, so each split
+  // file begins on a decodable keyframe per video stream. Defaults to disabled.
+  // Mutually exclusive with max_bagfile_size (open() throws if both are set).
   bool split_on_keyframe = false;
 
-  // How many seconds before a duration split is due to start buffering incoming messages
-  // instead of writing them immediately, so the whole upcoming keyframe cluster is visible
-  // before any of it is committed — this is what lets the writer place the file cut exactly
-  // before the cluster with zero dropped frames and zero duplicated messages, regardless of
-  // exactly which message happens to cross the duration deadline first.
-  // Must be at least as long as the video encoders' forced-keyframe recurrence period; only
-  // used when split_on_keyframe is enabled.
-  //
-  // NOTE: this value is coupled to whatever recording node forces the keyframes (e.g. ARIIS's
-  // image_compressor_node `keyframe_interval_sec` param) but there is no automatic enforcement
-  // of that relationship on either side. If the two drift out of sync (this value ends up
-  // shorter than the actual recurrence period), the look-ahead buffer simply won't contain a
-  // full cluster as often — no crash, just a silent partial regression back toward the old
-  // per-stream "wait for the next keyframe" behaviour. Keep them in sync by hand.
+  // Seconds to buffer before a duration split so a full keyframe cluster is visible first.
+  // Must stay >= the video encoders' keyframe interval (not enforced) or splits regress.
   double keyframe_lookback_sec = 1.0;
 
   // Start and end time for cutting
