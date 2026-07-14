@@ -1,0 +1,58 @@
+-- The C compiler identification is GNU 13.3.0
+-- The CXX compiler identification is GNU 13.3.0
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /usr/bin/cc - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Found ament_cmake: 2.5.6 (/opt/ros/jazzy/share/ament_cmake/cmake)
+-- Found Python3: /usr/bin/python3 (found version "3.12.3") found components: Interpreter 
+-- Found liblz4_vendor: 0.26.11 (/home/fmt/.no-mistakes/worktrees/b8e3b0e906af/01KXF3EBXC00B6ZS69VCQBAJA8/install/liblz4_vendor/share/liblz4_vendor/cmake)
+-- Found lz4: /usr/lib/x86_64-linux-gnu/liblz4.so (found version "1.9.4") 
+-- Found zstd_vendor: 0.26.11 (/home/fmt/.no-mistakes/worktrees/b8e3b0e906af/01KXF3EBXC00B6ZS69VCQBAJA8/install/zstd_vendor/share/zstd_vendor/cmake)
+-- Found zstd: /usr/lib/x86_64-linux-gnu/libzstd.so (found version "1.5.5") 
+-- Configuring done (1.8s)
+-- Generating done (0.0s)
+-- Build files have been written to: /home/fmt/.no-mistakes/worktrees/b8e3b0e906af/01KXF3EBXC00B6ZS69VCQBAJA8/build/mcap_vendor
+[ 50%] Building CXX object CMakeFiles/mcap.dir/src/main.cpp.o
+[100%] Linking CXX shared library libmcap.so
+[100%] Built target mcap
+-- Install configuration: "Release"
+-- Installing: /home/fmt/.no-mistakes/worktrees/b8e3b0e906af/01KXF3EBXC00B6ZS69VCQBAJA8/install/mcap_vendor/include/mcap_vendor/mcap/crc32.hpp
+-- Installing: /home/fmt/.no-mistakes/worktrees/b8e3b0e906af/01KXF3EBXC00B6ZS69VCQBAJA8/install/mcap_vendor/include/mcap_vendor/mcap/errors.hpp
+-- Installing: /home/fmt/.no-mistakes/worktrees/b8e3b0e906af/01KXF3EBXC00B6ZS69VCQBAJA8/install/mcap_vendor/include/mcap_vendor/mcap/internal.hpp
+-- Installing: /home/fmt/.no-mistakes/worktrees/b8e3b0e906af/01KXF3EBXC00B6ZS69VCQBAJA8/install/mcap_vendor/include/mcap_vendor/mcap/intervaltree.hpp
+-- Installing: /home/fmt/.no-mistakes/worktrees/b8e3b0e906af/01KXF3EBXC00B6ZS69VCQBAJA8/install/mcap_vendor/include/mcap_vendor/mcap/mcap.hpp
+-- Installing: /home/fmt/.no-mistakes/worktrees/b8e3b0e906af/01KXF3EBXC00B6ZS69VCQBAJA8/install/mcap_vendor/include/mcap_vendor/mcap/read_job_queue.hpp
+-- Installing: /home/fmt/.no-mistakes/worktrees/b8e3b0e906af/01KXF3EBXC00B6ZS69VCQBAJA8/install/mcap_vendor/include/mcap_vendor/mcap/reader.hpp
+-- Installing: /home/fmt/.no-mistakes/worktrees/b8e3b0e906af/01KXF3EBXC00B6ZS69VCQBAJA8/install/mcap_vendor/include/mcap_vendor/mcap/types.hpp
+-- Installing: /home/fmt/.no-mistakes/worktrees/b8e3b0e906af/01KXF3EBXC00B6ZS69VCQBAJA8/install/mcap_vendor/include/mcap_vendor/mcap/visibility.hpp
+-- Installing: /home/fmt/.no-mistakes/worktrees/b8e3b0e906af/01KXF3EBXC00B6ZS69VCQBAJA8/install/mcap_vendor/include/mcap_vendor/mcap/writer.hpp
+-- Installing: /home/fmt/.no-mistakes/worktrees/b8e3b0e906af/01KXF3EBXC00B6ZS69VCQBAJA8/install/mcap_vendor/lib/libmcap.so
+-- Installing: /home/fmt/.no-mistakes/worktrees/b8e3b0e906af/01KXF3EBXC00B6ZS69VCQBAJA8/install/mcap_vendor/share/mcap_vendor/environment/library_path.sh
+-- Installing: /home/fmt/.no-mistakes/worktrees/b8e3b0e906af/01KXF3EBXC00B6ZS69VCQBAJA8/install/mcap_vendor/share/mcap_vendor/environment/library_path.dsv
+-- Installing: /home/fmt/.no-mistakes/worktrees/b8e3b0e906af/01KXF3EBXC00B6ZS69VCQBAJA8/install/mcap_vendor/share/ament_index/resource_index/package_run_dependencies/mcap_vendor
+-- Installing: /home/fmt/.no-mistakes/worktrees/b8e3b0e906af/01KXF3EBXC00B6ZS69VCQBAJA8/install/mcap_vendor/share/ament_index/resource_index/parent_prefix_path/mcap_vendor
+-- Installing: /home/fmt/.no-mistakes/worktrees/b8e3b0e906af/01KXF3EBXC00B6ZS69VCQBAJA8/install/mcap_vendor/share/mcap_vendor/environment/ament_prefix_path.sh
+-- Installing: /home/fmt/.no-mistakes/worktrees/b8e3b0e906af/01KXF3EBXC00B6ZS69VCQBAJA8/install/mcap_vendor/share/mcap_vendor/environment/ament_prefix_path.dsv
+-- Installing: /home/fmt/.no-mistakes/worktrees/b8e3b0e906af/01KXF3EBXC00B6ZS69VCQBAJA8/install/mcap_vendor/share/mcap_vendor/environment/path.sh
+-- Installing: /home/fmt/.no-mistakes/worktrees/b8e3b0e906af/01KXF3EBXC00B6ZS69VCQBAJA8/install/mcap_vendor/share/mcap_vendor/environment/path.dsv
+-- Installing: /home/fmt/.no-mistakes/worktrees/b8e3b0e906af/01KXF3EBXC00B6ZS69VCQBAJA8/install/mcap_vendor/share/mcap_vendor/local_setup.bash
+-- Installing: /home/fmt/.no-mistakes/worktrees/b8e3b0e906af/01KXF3EBXC00B6ZS69VCQBAJA8/install/mcap_vendor/share/mcap_vendor/local_setup.sh
+-- Installing: /home/fmt/.no-mistakes/worktrees/b8e3b0e906af/01KXF3EBXC00B6ZS69VCQBAJA8/install/mcap_vendor/share/mcap_vendor/local_setup.zsh
+-- Installing: /home/fmt/.no-mistakes/worktrees/b8e3b0e906af/01KXF3EBXC00B6ZS69VCQBAJA8/install/mcap_vendor/share/mcap_vendor/local_setup.dsv
+-- Installing: /home/fmt/.no-mistakes/worktrees/b8e3b0e906af/01KXF3EBXC00B6ZS69VCQBAJA8/install/mcap_vendor/share/mcap_vendor/package.dsv
+-- Installing: /home/fmt/.no-mistakes/worktrees/b8e3b0e906af/01KXF3EBXC00B6ZS69VCQBAJA8/install/mcap_vendor/share/ament_index/resource_index/packages/mcap_vendor
+-- Installing: /home/fmt/.no-mistakes/worktrees/b8e3b0e906af/01KXF3EBXC00B6ZS69VCQBAJA8/install/mcap_vendor/share/mcap_vendor/cmake/mcapExport.cmake
+-- Installing: /home/fmt/.no-mistakes/worktrees/b8e3b0e906af/01KXF3EBXC00B6ZS69VCQBAJA8/install/mcap_vendor/share/mcap_vendor/cmake/mcapExport-release.cmake
+-- Installing: /home/fmt/.no-mistakes/worktrees/b8e3b0e906af/01KXF3EBXC00B6ZS69VCQBAJA8/install/mcap_vendor/share/mcap_vendor/cmake/ament_cmake_export_include_directories-extras.cmake
+-- Installing: /home/fmt/.no-mistakes/worktrees/b8e3b0e906af/01KXF3EBXC00B6ZS69VCQBAJA8/install/mcap_vendor/share/mcap_vendor/cmake/ament_cmake_export_targets-extras.cmake
+-- Installing: /home/fmt/.no-mistakes/worktrees/b8e3b0e906af/01KXF3EBXC00B6ZS69VCQBAJA8/install/mcap_vendor/share/mcap_vendor/cmake/ament_cmake_export_dependencies-extras.cmake
+-- Installing: /home/fmt/.no-mistakes/worktrees/b8e3b0e906af/01KXF3EBXC00B6ZS69VCQBAJA8/install/mcap_vendor/share/mcap_vendor/cmake/mcap_vendorConfig.cmake
+-- Installing: /home/fmt/.no-mistakes/worktrees/b8e3b0e906af/01KXF3EBXC00B6ZS69VCQBAJA8/install/mcap_vendor/share/mcap_vendor/cmake/mcap_vendorConfig-version.cmake
+-- Installing: /home/fmt/.no-mistakes/worktrees/b8e3b0e906af/01KXF3EBXC00B6ZS69VCQBAJA8/install/mcap_vendor/share/mcap_vendor/package.xml
