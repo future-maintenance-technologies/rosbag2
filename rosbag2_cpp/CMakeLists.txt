@@ -264,6 +264,9 @@ if(BUILD_TESTING)
       rosbag2_test_common::rosbag2_test_common
       test_msgs::test_msgs
     )
+    # For writers/keyframe_detection.hpp, an internal header living under src/.
+    target_include_directories(test_sequential_writer PRIVATE
+      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>)
   endif()
 
   ament_add_gmock_executable(test_serialization_converter test/rosbag2_cpp/test_serialization_converter.cpp)

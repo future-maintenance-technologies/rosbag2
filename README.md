@@ -158,6 +158,8 @@ $ ros2 bag record -a --repeat-all-transient-local --repeat-transient-local /map=
 listed in `--repeat-transient-local`, the QoS override takes precedence. Ensure the override
 includes `transient_local` durability to receive latched messages.
 
+_Keyframe-aware splitting_: enabled via `StorageOptions.split_on_keyframe` (ROS parameter `storage.split_on_keyframe`), this defers a duration-triggered split until an H.264 keyframe has been seen on each video topic, so every split file starts on a decodable keyframe instead of mid-GOP. `StorageOptions.keyframe_lookback_sec` (ROS parameter `storage.keyframe_lookback_sec`, default `1.0`) controls how many seconds before the duration deadline the writer starts look-ahead buffering to find that keyframe; it must be at least as long as the video encoders' forced-keyframe recurrence period, and strictly less than `max_bagfile_duration`. `split_on_keyframe` is mutually exclusive with size-based splitting: `max_bagfile_size` must be left unset, or the recorder will refuse to start. Defaults to disabled.
+
 #### Recording with compression
 
 By default Rosbag2 does not record with compression enabled. However, compression can be specified using the following CLI options.

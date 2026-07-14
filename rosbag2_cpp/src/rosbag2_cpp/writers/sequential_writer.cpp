@@ -270,10 +270,11 @@ void SequentialWriter::close()
 
   // Flush anything still held by the keyframe-aware split look-ahead buffer. Those messages
   // were deliberately not yet committed anywhere (see buffer_message_for_split) while waiting
-  // to see the rest of an upcoming keyframe cluster — if we're closing now, there's no more
+  // to see the rest of an upcoming keyframe cluster - if we're closing now, there's no more
   // cluster to wait for, so commit them all to the currently-open file rather than silently
-  // losing whatever was buffered. Must happen before flush_cache_update_metadata_and_close_storage()
-  // below, since commit_message() updates the metadata that call finalizes.
+  // losing whatever was buffered. Must happen before
+  // flush_cache_update_metadata_and_close_storage() below, since commit_message() updates the
+  // metadata that call finalizes.
   if (buffering_for_split_) {
     for (const auto & buffered : split_lookahead_buffer_) {
       commit_message(buffered.message, buffered.timestamp);
@@ -612,15 +613,14 @@ bool SequentialWriter::handle_keyframe_split(
     return true;
   }
 
+  const bool duration_split_configured = storage_options_.max_bagfile_duration !=
+    rosbag2_storage::storage_interfaces::MAX_BAGFILE_DURATION_NO_SPLIT;
   if (should_split_by_size()) {
     // Size splits are never deferred (bounds file growth if a stream stalls).
     split_bagfile();
     metadata_.files.back().starting_time = message_timestamp;
     arm_topics_awaiting_keyframe();
-  } else if (has_any_video_topic() &&
-    storage_options_.max_bagfile_duration !=
-    rosbag2_storage::storage_interfaces::MAX_BAGFILE_DURATION_NO_SPLIT)
-  {
+  } else if (has_any_video_topic() && duration_split_configured) {
     // Start buffering keyframe_lookback_sec before the nominal duration deadline, so an
     // entire keyframe cluster (which recurs at least that often) is guaranteed to already be
     // in the buffer by the time duration is actually exceeded — regardless of exactly which
@@ -695,7 +695,7 @@ void SequentialWriter::finalize_buffered_split()
   // apart — this may find one from a later cycle than the synchronized cluster the *other*
   // topics are about to cut on.
   std::unordered_map<std::string, std::chrono::time_point<std::chrono::high_resolution_clock>>
-    latest_keyframe;
+  latest_keyframe;
   for (auto it = split_lookahead_buffer_.rbegin(); it != split_lookahead_buffer_.rend(); ++it) {
     if (it->is_keyframe) {
       latest_keyframe.try_emplace(it->message->topic_name, it->timestamp);
@@ -736,7 +736,7 @@ void SequentialWriter::finalize_buffered_split()
   // headroom against jitter this rig hasn't shown yet.
   constexpr std::chrono::milliseconds kClusterTolerance{250};
   std::unordered_map<std::string, std::chrono::time_point<std::chrono::high_resolution_clock>>
-    topic_cut_time;
+  topic_cut_time;
   for (auto it = split_lookahead_buffer_.rbegin(); it != split_lookahead_buffer_.rend(); ++it) {
     if (it->is_keyframe && it->timestamp <= cut_time + kClusterTolerance) {
       topic_cut_time.try_emplace(it->message->topic_name, it->timestamp);
@@ -744,9 +744,9 @@ void SequentialWriter::finalize_buffered_split()
   }
 
   const auto topic_boundary = [&topic_cut_time, &cut_time](const std::string & topic) {
-    const auto it = topic_cut_time.find(topic);
-    return it != topic_cut_time.end() ? it->second : cut_time;
-  };
+      const auto it = topic_cut_time.find(topic);
+      return it != topic_cut_time.end() ? it->second : cut_time;
+    };
 
   for (const auto & buffered : split_lookahead_buffer_) {
     if (buffered.timestamp < topic_boundary(buffered.message->topic_name)) {
