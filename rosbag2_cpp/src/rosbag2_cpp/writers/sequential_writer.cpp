@@ -723,6 +723,24 @@ void SequentialWriter::finalize_buffered_split()
     (void)time;
     topics_awaiting_keyframe_.erase(name);
   }
+  // Topics with *no* keyframe anywhere in the look-ahead buffer (not even one pass 1 rejected
+  // for being off-cluster) don't get gated at all: we have no idea when they'll next produce
+  // one, and gating on zero evidence risks dropping data indefinitely to protect a
+  // single-file-decodable guarantee that's already lost for this split anyway. Better to write
+  // their non-keyframe frames through — undecodable as a standalone leading sequence in this
+  // file, but the H.264 reference chain is still intact across the file boundary in the
+  // *previous* file, so nothing is lost for anything that decodes the session continuously.
+  for (auto it = topics_awaiting_keyframe_.begin(); it != topics_awaiting_keyframe_.end(); ) {
+    if (latest_keyframe.find(*it) == latest_keyframe.end()) {
+      ROSBAG2_CPP_LOG_WARN(
+        "[keyframe-split] topic='%s' has no keyframe anywhere in the look-ahead buffer; "
+        "writing its frames without gating instead of dropping them",
+        it->c_str());
+      it = topics_awaiting_keyframe_.erase(it);
+    } else {
+      ++it;
+    }
+  }
 
   for (const auto & buffered : split_lookahead_buffer_) {
     if (buffered.timestamp < topic_boundary(buffered.message->topic_name)) {
