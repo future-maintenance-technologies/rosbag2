@@ -229,7 +229,10 @@ private:
 
   // Keyframe-aware split state (used only when storage_options_.split_on_keyframe).
 
-  // Video topics still waiting to deliver a keyframe before resuming in the new file.
+  // Video topics still waiting to deliver a keyframe before resuming in the new file. Only
+  // populated for topics that had *some* keyframe evidence in the look-ahead buffer (finding
+  // one is a bounded, short wait); a topic with none at all is deliberately left ungated in
+  // finalize_buffered_split() rather than risk dropping data indefinitely.
   std::unordered_set<std::string> topics_awaiting_keyframe_;
 
   // One message held back from immediate commit while a duration split is imminent.
