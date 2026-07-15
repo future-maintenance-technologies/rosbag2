@@ -701,6 +701,70 @@ TEST_F(SequentialWriterTest, keyframe_split_cuts_new_file_at_next_keyframe_not_m
   EXPECT_TRUE(found_first_of_file1);
 }
 
+TEST_F(SequentialWriterTest, keyframe_split_does_not_gate_topic_with_no_keyframe_evidence) {
+  using SharedMsg = std::shared_ptr<const rosbag2_storage::SerializedBagMessage>;
+
+  storage_options_.split_on_keyframe = true;
+  storage_options_.max_bagfile_duration = 2;  // seconds
+  storage_options_.keyframe_lookback_sec = 1.0;
+
+  size_t open_read_write_calls = 0;
+  ON_CALL(*storage_factory_, open_read_write(_)).WillByDefault(
+    DoAll(
+      Invoke(
+        [this, &open_read_write_calls](const rosbag2_storage::StorageOptions & so) {
+          fake_storage_uri_ = so.uri;
+          open_read_write_calls++;
+        }),
+      Return(storage_)));
+
+  // (topic, file index at time of write) for every message actually committed to storage.
+  std::vector<std::pair<std::string, size_t>> committed;
+  ON_CALL(*storage_, write(An<SharedMsg>())).WillByDefault(
+    [&](SharedMsg msg) {
+      committed.emplace_back(msg->topic_name, open_read_write_calls - 1);
+    });
+
+  auto sequential_writer = std::make_unique<rosbag2_cpp::writers::SequentialWriter>(
+    std::move(storage_factory_), converter_factory_, std::move(metadata_io_));
+  writer_ = std::make_unique<rosbag2_cpp::Writer>(std::move(sequential_writer));
+
+  writer_->open(storage_options_);
+  writer_->create_topic(
+    {0u, "cam", "foxglove_msgs/msg/CompressedVideo", "", {}, ""});
+  writer_->create_topic(
+    {1u, "cam_no_keyframes", "foxglove_msgs/msg/CompressedVideo", "", {}, ""});
+
+  // "cam" has a normal keyframe cluster driving the cut; "cam_no_keyframes" is a second
+  // video topic that never produces a single keyframe anywhere in the look-ahead buffer.
+  const std::vector<std::pair<double, bool>> cam_frames = {
+    {0.0, true},
+    {1.0, false},
+    {1.4, true},
+    {2.1, false},
+  };
+  const std::vector<double> cam_no_keyframes_frames = {0.0, 1.0, 1.4, 1.6, 2.1};
+
+  for (const auto & [t_sec, is_kf] : cam_frames) {
+    const auto ts = static_cast<rcutils_time_point_value_t>(t_sec * 1e9);
+    writer_->write(make_video_msg("cam", ts, is_kf));
+  }
+  for (const auto t_sec : cam_no_keyframes_frames) {
+    const auto ts = static_cast<rcutils_time_point_value_t>(t_sec * 1e9);
+    writer_->write(make_video_msg("cam_no_keyframes", ts, false));
+  }
+
+  writer_.reset();
+
+  size_t cam_no_keyframes_committed = 0;
+  for (const auto & [topic, file_idx] : committed) {
+    (void)file_idx;
+    if (topic == "cam_no_keyframes") {cam_no_keyframes_committed++;}
+  }
+  EXPECT_EQ(cam_no_keyframes_committed, cam_no_keyframes_frames.size()) <<
+    "a topic with zero keyframe evidence in the look-ahead buffer must not be gated/dropped";
+}
+
 TEST_F(
   SequentialWriterTest,
   writer_with_cache_splits_when_storage_bagfile_size_gt_max_bagfile_size) {

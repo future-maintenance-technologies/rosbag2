@@ -72,6 +72,13 @@ public:
   // Defaults to disabled.
   bool snapshot_mode = false;
 
+  // Start and end time for cutting
+  int64_t start_time_ns = -1;
+  int64_t end_time_ns = -1;
+
+  // Stores the custom data
+  std::unordered_map<std::string, std::string> custom_data{};
+
   // Defer a duration-triggered split until an H.264 keyframe has been seen, so each split
   // file begins on a decodable keyframe per video stream. Defaults to disabled.
   // Mutually exclusive with max_bagfile_size (open() throws if both are set).
@@ -80,15 +87,6 @@ public:
   // Seconds to buffer before a duration split so a full keyframe cluster is visible first.
   // Must stay >= the video encoders' keyframe interval (not enforced) or splits regress.
   double keyframe_lookback_sec = 1.0;
-
-  // Start and end time for cutting. Used in the writers to limit the range of stored messages.
-  // As well as in the "ros2 bag convert" CLI aka "bag_rewrite" utility to limit the range of the
-  // reading and writing messages.
-  int64_t start_time_ns = -1;
-  int64_t end_time_ns = -1;
-
-  // Stores the custom data
-  std::unordered_map<std::string, std::string> custom_data{};
 };
 
 }  // namespace rosbag2_storage

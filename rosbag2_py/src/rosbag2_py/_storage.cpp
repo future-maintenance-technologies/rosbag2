@@ -94,11 +94,11 @@ PYBIND11_MODULE(_storage, m) {
         std::string storage_preset_profile,
         std::string storage_config_uri,
         bool snapshot_mode,
-        bool split_on_keyframe,
-        double keyframe_lookback_sec,
         int64_t start_time_ns,
         int64_t end_time_ns,
-        KEY_VALUE_MAP custom_data)
+        KEY_VALUE_MAP custom_data,
+        bool split_on_keyframe,
+        double keyframe_lookback_sec)
       {
         return rosbag2_storage::StorageOptions{
           std::move(uri),
@@ -111,11 +111,11 @@ PYBIND11_MODULE(_storage, m) {
           std::move(storage_preset_profile),
           std::move(storage_config_uri),
           snapshot_mode,
-          split_on_keyframe,
-          keyframe_lookback_sec,
           start_time_ns,
           end_time_ns,
           std::move(custom_data),
+          split_on_keyframe,
+          keyframe_lookback_sec,
         };
       }),
     pybind11::arg("uri"),
@@ -128,11 +128,11 @@ PYBIND11_MODULE(_storage, m) {
     pybind11::arg("storage_preset_profile") = "",
     pybind11::arg("storage_config_uri") = "",
     pybind11::arg("snapshot_mode") = false,
-    pybind11::arg("split_on_keyframe") = false,
-    pybind11::arg("keyframe_lookback_sec") = 1.0,
     pybind11::arg("start_time_ns") = -1,
     pybind11::arg("end_time_ns") = -1,
-    pybind11::arg("custom_data") = KEY_VALUE_MAP{})
+    pybind11::arg("custom_data") = KEY_VALUE_MAP{},
+    pybind11::arg("split_on_keyframe") = false,
+    pybind11::arg("keyframe_lookback_sec") = 1.0)
   .def_readwrite("uri", &rosbag2_storage::StorageOptions::uri)
   .def_readwrite("storage_id", &rosbag2_storage::StorageOptions::storage_id)
   .def_readwrite(
