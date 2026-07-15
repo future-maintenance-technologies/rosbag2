@@ -172,6 +172,12 @@ void SequentialWriter::open(
       throw std::runtime_error(
               "split_on_keyframe does not support max_bagfile_size. Disable one or the other.");
     }
+    if (storage_options_.keyframe_lookback_sec < 0.0) {
+      std::stringstream error;
+      error << "keyframe_lookback_sec (" << storage_options_.keyframe_lookback_sec <<
+        "s) must not be negative.";
+      throw std::runtime_error{error.str()};
+    }
     if (storage_options_.max_bagfile_duration !=
       rosbag2_storage::storage_interfaces::MAX_BAGFILE_DURATION_NO_SPLIT)
     {
