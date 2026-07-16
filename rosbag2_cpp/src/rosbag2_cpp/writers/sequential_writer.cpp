@@ -30,6 +30,7 @@
 #include "rosbag2_cpp/info.hpp"
 #include "rosbag2_cpp/logging.hpp"
 #include "rosbag2_cpp/service_utils.hpp"
+#include "rosbag2_cpp/writers/keyframe_detection.hpp"
 
 #include "rosbag2_storage/default_storage_id.hpp"
 #include "rosbag2_storage/storage_options.hpp"
@@ -47,6 +48,19 @@ std::string strip_parent_path(const std::string & relative_path)
 {
   return fs::path(relative_path).filename().generic_string();
 }
+
+// The only video message type currently supported; promote to a configurable list in
+// StorageOptions if a second type is needed.
+constexpr const char * kVideoTopicType = "foxglove_msgs/msg/CompressedVideo";
+
+bool is_video_topic_type(const std::string & type)
+{
+  return type == kVideoTopicType;
+}
+
+// Upper bound on the look-ahead buffer so a stalled keyframe cluster can't grow it without
+// bound; crossing it cuts immediately with whatever's been resolved so far.
+constexpr size_t kMaxLookaheadBufferBytes = 1024ULL * 1024 * 1024;  // 1 GiB
 }  // namespace
 
 SequentialWriter::SequentialWriter(
@@ -149,6 +163,39 @@ void SequentialWriter::open(
     throw std::runtime_error{error.str()};
   }
 
+  if (storage_options_.split_on_keyframe) {
+    // split_on_keyframe and max_bagfile_size are mutually exclusive: deferring a size split
+    // to wait for a keyframe would defeat max_bagfile_size's purpose of bounding file growth.
+    if (storage_options_.max_bagfile_size !=
+      rosbag2_storage::storage_interfaces::MAX_BAGFILE_SIZE_NO_SPLIT)
+    {
+      throw std::runtime_error(
+              "split_on_keyframe does not support max_bagfile_size. Disable one or the other.");
+    }
+    if (storage_options_.keyframe_lookback_sec < 0.0) {
+      std::stringstream error;
+      error << "keyframe_lookback_sec (" << storage_options_.keyframe_lookback_sec <<
+        "s) must not be negative.";
+      throw std::runtime_error{error.str()};
+    }
+    if (storage_options_.max_bagfile_duration !=
+      rosbag2_storage::storage_interfaces::MAX_BAGFILE_DURATION_NO_SPLIT)
+    {
+      const auto max_duration_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::seconds(storage_options_.max_bagfile_duration));
+      const auto lookback_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::duration<double>(storage_options_.keyframe_lookback_sec));
+      if (lookback_ns >= max_duration_ns) {
+        std::stringstream error;
+        error << "keyframe_lookback_sec (" << storage_options_.keyframe_lookback_sec <<
+          "s) must be less than max_bagfile_duration (" <<
+          storage_options_.max_bagfile_duration <<
+          "s); otherwise look-ahead buffering would span the entire file.";
+        throw std::runtime_error{error.str()};
+      }
+    }
+  }
+
   use_cache_ = storage_options.max_cache_size > 0u;
   if (storage_options.snapshot_mode && !use_cache_) {
     throw std::runtime_error(
@@ -205,6 +252,17 @@ void SequentialWriter::close()
   // Note. close and open methods protected with mutex on upper rosbag2_cpp::writer level.
   if (!is_open_.exchange(false)) {
     return;  // The writer is not open
+  }
+
+  // Flush any messages still held by the look-ahead buffer so none are silently lost on close;
+  // must run before flush_cache_update_metadata_and_close_storage() finalizes the metadata.
+  if (buffering_for_split_) {
+    for (const auto & buffered : split_lookahead_buffer_) {
+      commit_message(buffered.message, buffered.timestamp);
+    }
+    buffering_for_split_ = false;
+    split_lookahead_buffer_.clear();
+    split_lookahead_buffer_bytes_ = 0;
   }
 
   flush_cache_update_metadata_and_close_storage();
@@ -389,6 +447,241 @@ void SequentialWriter::split_bagfile()
   (void)split_bagfile_local();
 }
 
+void SequentialWriter::arm_topics_awaiting_keyframe()
+{
+  // Every video topic must start the new file on a keyframe. Re-arming clears then
+  // re-inserts all video topics; a still-silent stream simply stays "awaiting".
+  topics_awaiting_keyframe_.clear();
+  for (const auto & [name, info] : topics_names_to_info_) {
+    if (is_video_topic_type(info.topic_metadata.type)) {
+      topics_awaiting_keyframe_.insert(name);
+    }
+  }
+}
+
+void SequentialWriter::commit_message(
+  const std::shared_ptr<const rosbag2_storage::SerializedBagMessage> & message,
+  const std::chrono::time_point<std::chrono::high_resolution_clock> & message_timestamp)
+{
+  rosbag2_storage::TopicInformation * topic_information_ptr{nullptr};
+  if (const auto it = topics_names_to_info_.find(message->topic_name);
+    it != topics_names_to_info_.end())
+  {
+    topic_information_ptr = &(it->second);
+  } else {
+    std::stringstream errmsg;
+    errmsg << "Failed to write on topic '" << message->topic_name <<
+      "'. Call create_topic() before first write.";
+    throw std::runtime_error(errmsg.str());
+  }
+
+  metadata_.starting_time = std::min(metadata_.starting_time, message_timestamp);
+
+  metadata_.files.back().starting_time =
+    std::min(metadata_.files.back().starting_time, message_timestamp);
+  const auto duration = message_timestamp - metadata_.starting_time;
+  metadata_.duration = std::max(metadata_.duration, duration);
+
+  const auto file_duration = message_timestamp - metadata_.files.back().starting_time;
+  metadata_.files.back().duration =
+    std::max(metadata_.files.back().duration, file_duration);
+
+  auto converted_msg = get_writeable_message(message);
+
+  metadata_.files.back().message_count++;
+  if (storage_options_.max_cache_size == 0u) {
+    // If cache size is set to zero, we write to storage directly
+    storage_->write(converted_msg);
+    metadata_.files.back().message_count++;
+    topic_information_ptr->message_count++;
+  } else {
+    // Otherwise, use cache buffer
+    message_cache_->push(converted_msg);
+  }
+}
+
+bool SequentialWriter::handle_keyframe_split(
+  const std::shared_ptr<const rosbag2_storage::SerializedBagMessage> & message,
+  const std::string & topic_type,
+  const std::chrono::time_point<std::chrono::high_resolution_clock> & message_timestamp)
+{
+  const bool is_video = is_video_topic_type(topic_type);
+  bool is_keyframe = false;
+  if (is_video && message->serialized_data) {
+    is_keyframe = compressed_video_has_idr(
+      message->serialized_data->buffer, message->serialized_data->buffer_length);
+  }
+
+  if (buffering_for_split_) {
+    // Already inside the look-ahead window: hold this message rather than committing it,
+    // until the whole upcoming keyframe cluster is visible and the true cut point is known.
+    buffer_message_for_split(message, message_timestamp, is_keyframe);
+    return true;
+  }
+
+  const bool duration_split_configured = storage_options_.max_bagfile_duration !=
+    rosbag2_storage::storage_interfaces::MAX_BAGFILE_DURATION_NO_SPLIT;
+  if (should_split_by_size()) {
+    // Size splits are never deferred (bounds file growth if a stream stalls).
+    split_bagfile();
+    metadata_.files.back().starting_time = message_timestamp;
+    arm_topics_awaiting_keyframe();
+  } else if (has_any_video_topic() && duration_split_configured) {
+    // Start buffering keyframe_lookback_sec before the duration deadline, so a full keyframe
+    // cluster is already buffered by the time duration is exceeded, wherever the cut lands.
+    const auto max_duration_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::seconds(storage_options_.max_bagfile_duration));
+    const auto lookback_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::duration<double>(std::max(0.0, storage_options_.keyframe_lookback_sec)));
+    const auto lookahead_start_ns = lookback_ns >= max_duration_ns ?
+      std::chrono::nanoseconds(0) : max_duration_ns - lookback_ns;
+    if ((message_timestamp - metadata_.files.back().starting_time) >= lookahead_start_ns) {
+      buffering_for_split_ = true;
+      split_lookahead_buffer_.clear();
+      split_lookahead_buffer_bytes_ = 0;
+      buffer_message_for_split(message, message_timestamp, is_keyframe);
+      return true;
+    }
+  } else if (should_split_by_duration(message_timestamp)) {
+    // No video topics at all - behave like a normal split.
+    split_bagfile();
+    metadata_.files.back().starting_time = message_timestamp;
+  }
+
+  // Post-cut gating: drop a stream's frames until its first keyframe, so the new file begins
+  // decodably. Topics already placed on a keyframe by finalize_buffered_split() are pre-cleared.
+  if (!topics_awaiting_keyframe_.empty()) {
+    const auto it = topics_awaiting_keyframe_.find(message->topic_name);
+    if (it != topics_awaiting_keyframe_.end()) {
+      if (is_keyframe) {
+        topics_awaiting_keyframe_.erase(it);
+      } else {
+        ROSBAG2_CPP_LOG_WARN(
+          "[keyframe-split] dropping undecodable pre-keyframe message on topic='%s' - still "
+          "awaiting its first keyframe since the last split",
+          message->topic_name.c_str());
+        return true;  // undecodable pre-keyframe frame - drop
+      }
+    }
+  }
+  return false;
+}
+
+void SequentialWriter::buffer_message_for_split(
+  const std::shared_ptr<const rosbag2_storage::SerializedBagMessage> & message,
+  const std::chrono::time_point<std::chrono::high_resolution_clock> & message_timestamp,
+  bool is_keyframe)
+{
+  split_lookahead_buffer_.push_back({message, message_timestamp, is_keyframe});
+  split_lookahead_buffer_bytes_ +=
+    message->serialized_data ? message->serialized_data->buffer_length : 0;
+
+  const bool buffer_too_large = split_lookahead_buffer_bytes_ > kMaxLookaheadBufferBytes;
+  if (buffer_too_large) {
+    ROSBAG2_CPP_LOG_WARN(
+      "[keyframe-split] look-ahead buffer exceeded %zu bytes without completing a keyframe "
+      "cluster; cutting now instead of continuing to wait.",
+      kMaxLookaheadBufferBytes);
+  }
+  if (buffer_too_large || should_split_by_duration(message_timestamp)) {
+    finalize_buffered_split();
+  }
+}
+
+void SequentialWriter::finalize_buffered_split()
+{
+  // Pass 1: each video topic's most-recently-buffered keyframe, which may be a cycle later
+  // than the cluster other topics are about to cut on (pass 2 below resolves that).
+  std::unordered_map<std::string, std::chrono::time_point<std::chrono::high_resolution_clock>>
+  latest_keyframe;
+  for (auto it = split_lookahead_buffer_.rbegin(); it != split_lookahead_buffer_.rend(); ++it) {
+    if (it->is_keyframe) {
+      latest_keyframe.try_emplace(it->message->topic_name, it->timestamp);
+    }
+  }
+
+  // Cut immediately before the earliest keyframe. With none at all, fall back to the
+  // buffer's *last* timestamp, not its first, which would drag starting_time far back.
+  auto cut_time = split_lookahead_buffer_.back().timestamp;
+  for (const auto & [name, time] : latest_keyframe) {
+    (void)name;
+    cut_time = std::min(cut_time, time);
+  }
+
+  // Pass 2: re-resolve each topic's boundary near cut_time instead of using pass 1's overall
+  // latest keyframe, or messages before a later keyframe would get stranded in the old file.
+  // kClusterTolerance absorbs cluster jitter while staying well under keyframe_interval_sec.
+  constexpr std::chrono::milliseconds kClusterTolerance{250};
+  std::unordered_map<std::string, std::chrono::time_point<std::chrono::high_resolution_clock>>
+  topic_cut_time;
+  for (auto it = split_lookahead_buffer_.rbegin(); it != split_lookahead_buffer_.rend(); ++it) {
+    if (it->is_keyframe && it->timestamp <= cut_time + kClusterTolerance) {
+      topic_cut_time.try_emplace(it->message->topic_name, it->timestamp);
+    }
+  }
+
+  const auto topic_boundary = [&topic_cut_time, &cut_time](const std::string & topic) {
+      const auto it = topic_cut_time.find(topic);
+      return it != topic_cut_time.end() ? it->second : cut_time;
+    };
+
+  for (const auto & buffered : split_lookahead_buffer_) {
+    if (buffered.timestamp < topic_boundary(buffered.message->topic_name)) {
+      commit_message(buffered.message, buffered.timestamp);
+    }
+  }
+
+  split_bagfile();
+  metadata_.files.back().starting_time = cut_time;
+  arm_topics_awaiting_keyframe();
+  // Topics already placed on a keyframe above don't need the post-cut gate.
+  for (const auto & [name, time] : topic_cut_time) {
+    (void)time;
+    topics_awaiting_keyframe_.erase(name);
+  }
+  // Topics with *no* keyframe anywhere in the look-ahead buffer (not even one pass 1 rejected
+  // for being off-cluster) don't get gated at all: we have no idea when they'll next produce
+  // one, and gating on zero evidence risks dropping data indefinitely to protect a
+  // single-file-decodable guarantee that's already lost for this split anyway. Better to write
+  // their non-keyframe frames through — undecodable as a standalone leading sequence in this
+  // file, but the H.264 reference chain is still intact across the file boundary in the
+  // *previous* file, so nothing is lost for anything that decodes the session continuously.
+  for (auto it = topics_awaiting_keyframe_.begin(); it != topics_awaiting_keyframe_.end(); ) {
+    if (latest_keyframe.find(*it) == latest_keyframe.end()) {
+      ROSBAG2_CPP_LOG_WARN(
+        "[keyframe-split] topic='%s' has no keyframe anywhere in the look-ahead buffer; "
+        "writing its frames without gating instead of dropping them",
+        it->c_str());
+      it = topics_awaiting_keyframe_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+
+  for (const auto & buffered : split_lookahead_buffer_) {
+    if (buffered.timestamp < topic_boundary(buffered.message->topic_name)) {
+      continue;  // already committed to the old file above
+    }
+    const auto awaiting_it = topics_awaiting_keyframe_.find(buffered.message->topic_name);
+    if (awaiting_it == topics_awaiting_keyframe_.end()) {
+      commit_message(buffered.message, buffered.timestamp);
+    } else if (buffered.is_keyframe) {
+      topics_awaiting_keyframe_.erase(awaiting_it);
+      commit_message(buffered.message, buffered.timestamp);
+    } else {
+      ROSBAG2_CPP_LOG_WARN(
+        "[keyframe-split] dropping undecodable pre-keyframe message on topic='%s' - no "
+        "keyframe for it in the look-ahead buffer, still awaiting its first one",
+        buffered.message->topic_name.c_str());
+      // undecodable pre-keyframe frame for a still-silent topic - drop.
+    }
+  }
+
+  buffering_for_split_ = false;
+  split_lookahead_buffer_.clear();
+  split_lookahead_buffer_bytes_ = 0;
+}
+
 void SequentialWriter::write(std::shared_ptr<const rosbag2_storage::SerializedBagMessage> message)
 {
   if (!is_open_) {
@@ -420,34 +713,20 @@ void SequentialWriter::write(std::shared_ptr<const rosbag2_storage::SerializedBa
     is_first_message_ = false;
   }
 
-  if (!storage_options_.snapshot_mode && should_split_bagfile(message_timestamp)) {
-    split_bagfile();
-    metadata_.files.back().starting_time = message_timestamp;
+  if (!storage_options_.snapshot_mode) {
+    if (storage_options_.split_on_keyframe) {
+      if (handle_keyframe_split(
+          message, topic_information_ptr->topic_metadata.type, message_timestamp))
+      {
+        return;  // buffered for later, or dropped as an undecodable pre-keyframe frame
+      }
+    } else if (should_split_bagfile(message_timestamp)) {
+      split_bagfile();
+      metadata_.files.back().starting_time = message_timestamp;
+    }
   }
 
-  metadata_.starting_time = std::min(metadata_.starting_time, message_timestamp);
-
-  metadata_.files.back().starting_time =
-    std::min(metadata_.files.back().starting_time, message_timestamp);
-  const auto duration = message_timestamp - metadata_.starting_time;
-  metadata_.duration = std::max(metadata_.duration, duration);
-
-  const auto file_duration = message_timestamp - metadata_.files.back().starting_time;
-  metadata_.files.back().duration =
-    std::max(metadata_.files.back().duration, file_duration);
-
-  auto converted_msg = get_writeable_message(message);
-
-  metadata_.files.back().message_count++;
-  if (storage_options_.max_cache_size == 0u) {
-    // If cache size is set to zero, we write to storage directly
-    storage_->write(converted_msg);
-    metadata_.files.back().message_count++;
-    topic_information_ptr->message_count++;
-  } else {
-    // Otherwise, use cache buffer
-    message_cache_->push(converted_msg);
-  }
+  commit_message(message, message_timestamp);
 }
 
 bool SequentialWriter::take_snapshot()
@@ -470,32 +749,46 @@ SequentialWriter::get_writeable_message(
   return converter_ ? converter_->convert(message) : message;
 }
 
+bool SequentialWriter::should_split_by_size() const
+{
+  if (storage_options_.max_bagfile_size ==
+    rosbag2_storage::storage_interfaces::MAX_BAGFILE_SIZE_NO_SPLIT)
+  {
+    return false;
+  }
+  // TODO(morlov): consider cached messages size in splitting decision. Right now we only consider
+  //  the size of already written messages in storage. Add message_cache_->get_current_size() API.
+  return storage_->get_bagfile_size() >= storage_options_.max_bagfile_size;
+}
+
+bool SequentialWriter::should_split_by_duration(
+  const std::chrono::time_point<std::chrono::high_resolution_clock> & current_time) const
+{
+  if (storage_options_.max_bagfile_duration ==
+    rosbag2_storage::storage_interfaces::MAX_BAGFILE_DURATION_NO_SPLIT)
+  {
+    return false;
+  }
+  const auto max_duration_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+    std::chrono::seconds(storage_options_.max_bagfile_duration));
+  return (current_time - metadata_.files.back().starting_time) > max_duration_ns;
+}
+
 bool SequentialWriter::should_split_bagfile(
   const std::chrono::time_point<std::chrono::high_resolution_clock> & current_time) const
 {
-  // Assume we aren't splitting
-  bool should_split = false;
+  return should_split_by_size() || should_split_by_duration(current_time);
+}
 
-  // Splitting by size
-  if (storage_options_.max_bagfile_size !=
-    rosbag2_storage::storage_interfaces::MAX_BAGFILE_SIZE_NO_SPLIT)
-  {
-    // TODO(morlov): consider cached messages size in splitting decision. Right now we only consider
-    //  the size of already written messages in storage. Add message_cache_->get_current_size() API.
-    should_split = (storage_->get_bagfile_size() >= storage_options_.max_bagfile_size);
+bool SequentialWriter::has_any_video_topic() const
+{
+  for (const auto & [name, info] : topics_names_to_info_) {
+    (void)name;
+    if (is_video_topic_type(info.topic_metadata.type)) {
+      return true;
+    }
   }
-
-  // Splitting by time
-  if (storage_options_.max_bagfile_duration !=
-    rosbag2_storage::storage_interfaces::MAX_BAGFILE_DURATION_NO_SPLIT)
-  {
-    auto max_duration_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-      std::chrono::seconds(storage_options_.max_bagfile_duration));
-    should_split = should_split ||
-      ((current_time - metadata_.files.back().starting_time) > max_duration_ns);
-  }
-
-  return should_split;
+  return false;
 }
 
 bool SequentialWriter::message_within_accepted_time_range(

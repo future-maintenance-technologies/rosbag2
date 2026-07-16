@@ -73,6 +73,8 @@ public:
       auto bag_message = std::make_shared<rosbag2_storage::SerializedBagMessage>();
       bag_message->serialized_data = make_serialized_message(std::get<0>(msg));
       bag_message->recv_timestamp = std::get<1>(msg);
+      // mcap logTime (which drives read-back metadata) is indexed by send_timestamp in this fork
+      bag_message->send_timestamp = std::get<1>(msg);
       bag_message->topic_name = topic_metadata.name;
       rw_storage->write(bag_message);
     }

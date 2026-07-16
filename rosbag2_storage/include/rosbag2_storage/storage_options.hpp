@@ -33,6 +33,7 @@ public:
 
   // The maximum size a bagfile can be, in bytes, before it is split.
   // A value of 0 indicates that bagfile splitting will not be used.
+  // Mutually exclusive with split_on_keyframe (open() throws if both are set).
   uint64_t max_bagfile_size = 0;
 
   // The maximum duration a bagfile can be, in seconds, before it is split.
@@ -55,6 +56,15 @@ public:
   // Enable snapshot mode.
   // Defaults to disabled.
   bool snapshot_mode = false;
+
+  // Defer a duration-triggered split until an H.264 keyframe has been seen, so each split
+  // file begins on a decodable keyframe per video stream. Defaults to disabled.
+  // Mutually exclusive with max_bagfile_size (open() throws if both are set).
+  bool split_on_keyframe = false;
+
+  // Seconds to buffer before a duration split so a full keyframe cluster is visible first.
+  // Must stay >= the video encoders' keyframe interval (not enforced) or splits regress.
+  double keyframe_lookback_sec = 1.0;
 
   // Start and end time for cutting
   int64_t start_time_ns = -1;

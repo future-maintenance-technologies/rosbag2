@@ -17,8 +17,10 @@
 
 #include <memory>
 #include <mutex>
+#include <chrono>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "rosbag2_cpp/bag_events.hpp"
@@ -192,6 +194,13 @@ protected:
   bool should_split_bagfile(
     const std::chrono::time_point<std::chrono::high_resolution_clock> & current_time) const;
 
+  // Split-condition predicates, separated so keyframe-aware splitting can defer duration
+  // splits while still taking size splits immediately (bounds file growth).
+  bool should_split_by_size() const;
+  bool should_split_by_duration(
+    const std::chrono::time_point<std::chrono::high_resolution_clock> & current_time) const;
+  bool has_any_video_topic() const;
+
   // Checks if the message to be written is within accepted time range
   bool message_within_accepted_time_range(
     const rcutils_time_point_value_t current_time) const;
@@ -217,6 +226,59 @@ private:
   std::atomic_bool is_open_{false};
 
   bag_events::EventCallbackManager callback_manager_;
+
+  // Keyframe-aware split state (used only when storage_options_.split_on_keyframe).
+
+  // Video topics still waiting to deliver a keyframe before resuming in the new file. Only
+  // populated for topics that had *some* keyframe evidence in the look-ahead buffer (finding
+  // one is a bounded, short wait); a topic with none at all is deliberately left ungated in
+  // finalize_buffered_split() rather than risk dropping data indefinitely.
+  std::unordered_set<std::string> topics_awaiting_keyframe_;
+
+  // One message held back from immediate commit while a duration split is imminent.
+  struct BufferedSplitMessage
+  {
+    std::shared_ptr<const rosbag2_storage::SerializedBagMessage> message;
+    std::chrono::time_point<std::chrono::high_resolution_clock> timestamp;
+    bool is_keyframe {false};
+  };
+
+  // True once a duration split is within keyframe_lookback_sec of being due and we've started
+  // buffering instead of committing, so the whole upcoming keyframe cluster is visible before
+  // the cut point is chosen.
+  bool buffering_for_split_ {false};
+  std::vector<BufferedSplitMessage> split_lookahead_buffer_;
+  // Running total of split_lookahead_buffer_'s bytes, capped at kMaxLookaheadBufferBytes so a
+  // stuck keyframe cluster can't grow the buffer without bound.
+  size_t split_lookahead_buffer_bytes_ {0};
+
+  // Re-arms topics_awaiting_keyframe_ with every known video topic (called at each split).
+  void arm_topics_awaiting_keyframe();
+
+  // Handles the keyframe-aware split for one incoming message. Returns true if the caller
+  // must not commit it now (buffered for later, or dropped as undecodable pre-keyframe).
+  bool handle_keyframe_split(
+    const std::shared_ptr<const rosbag2_storage::SerializedBagMessage> & message,
+    const std::string & topic_type,
+    const std::chrono::time_point<std::chrono::high_resolution_clock> & message_timestamp);
+
+  // Appends one message to split_lookahead_buffer_ and, once duration is due or the buffer's
+  // size cap is hit, calls finalize_buffered_split().
+  void buffer_message_for_split(
+    const std::shared_ptr<const rosbag2_storage::SerializedBagMessage> & message,
+    const std::chrono::time_point<std::chrono::high_resolution_clock> & message_timestamp,
+    bool is_keyframe);
+
+  // Called when a pending duration split is due (or the buffer's size cap forces an early
+  // cut): finds each video topic's latest buffered keyframe, cuts immediately before the
+  // earliest of them, and commits the buffer across the split.
+  void finalize_buffered_split();
+
+  // Applies the metadata bookkeeping + actual storage write shared by both the normal write()
+  // path and the buffered-message replay path in finalize_buffered_split().
+  void commit_message(
+    const std::shared_ptr<const rosbag2_storage::SerializedBagMessage> & message,
+    const std::chrono::time_point<std::chrono::high_resolution_clock> & message_timestamp);
 };
 
 }  // namespace writers

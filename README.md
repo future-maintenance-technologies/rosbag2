@@ -96,6 +96,8 @@ _Splitting by time_: `ros2 bag record -a -d 9000` will split the bag files after
 
 If both splitting by size and duration are enabled, the bag will split at whichever threshold is reached first.
 
+_Keyframe-aware splitting_: enabled via `StorageOptions.split_on_keyframe` (ROS parameter `storage.split_on_keyframe`), this defers a duration-triggered split until an H.264 keyframe has been seen on each video topic, so every split file starts on a decodable keyframe instead of mid-GOP. `StorageOptions.keyframe_lookback_sec` (ROS parameter `storage.keyframe_lookback_sec`, default `1.0`) controls how many seconds before the duration deadline the writer starts look-ahead buffering to find that keyframe; it must be at least as long as the video encoders' forced-keyframe recurrence period, and strictly less than `max_bagfile_duration`. `split_on_keyframe` is mutually exclusive with size-based splitting: `max_bagfile_size` must be left unset, or the recorder will refuse to start. Defaults to disabled.
+
 #### Recording with compression
 
 By default Rosbag2 does not record with compression enabled. However, compression can be specified using the following CLI options.
