@@ -215,10 +215,11 @@ void SequentialWriter::open(
       std::bind(&SequentialWriter::write_messages, this, std::placeholders::_1));
   }
 
-  async_split_ = use_cache_ && storage_options_.split_on_keyframe &&
+  async_split_ = allow_async_split_ && use_cache_ && storage_options_.split_on_keyframe &&
     !storage_options_.snapshot_mode;
   storage_extension_ = fs::path(storage_->get_relative_file_path()).extension().generic_string();
   pending_splits_.clear();
+  consumer_message_count_ = 0;
 
   init_metadata();
   // Register topics in storage if they already exists
@@ -742,6 +743,7 @@ void SequentialWriter::switch_storage_in_consumer()
   {
     std::lock_guard<std::mutex> storage_lock(storage_mutex_);
     closed_file = storage_->get_relative_file_path();
+    split.closing_metadata.message_count = consumer_message_count_;
     storage_->update_metadata(split.closing_metadata);
     storage_ = storage_factory_->open_read_write(split.next_storage_options);
     if (!storage_) {
@@ -838,6 +840,9 @@ bool SequentialWriter::should_split_by_size() const
   if (storage_options_.max_bagfile_size ==
     rosbag2_storage::storage_interfaces::MAX_BAGFILE_SIZE_NO_SPLIT)
   {
+    return false;
+  }
+  if (async_split_) {
     return false;
   }
   // TODO(morlov): consider cached messages size in splitting decision. Right now we only consider
@@ -957,7 +962,9 @@ void SequentialWriter::write_message_run(
     metadata_.files.back().duration = last_msg_timestamp - first_msg_timestamp;
     metadata_.files.back().message_count = messages.size();
   }
-  if (!async_split_) {
+  if (async_split_) {
+    consumer_message_count_ += messages.size();
+  } else {
     metadata_.message_count += messages.size();
   }
   std::lock_guard<std::mutex> lock(topics_info_mutex_);

@@ -145,6 +145,8 @@ public:
   void split_bagfile() override;
 
 protected:
+  // Subclasses that must compress the closed file at split time turn this off.
+  bool allow_async_split_ {true};
   std::string base_folder_;
   std::unique_ptr<rosbag2_storage::StorageFactoryInterface> storage_factory_;
   std::shared_ptr<SerializationFormatConverterFactoryInterface> converter_factory_;
@@ -257,6 +259,8 @@ private:
   // closing a file and draining the look-ahead burst there blocked the recorder's receive
   // path long enough (20-100 ms) for shallow subscription queues to drop messages.
   bool async_split_ {false};
+  // Messages written by the cache consumer; stamped on the closed file's metadata at a split.
+  uint64_t consumer_message_count_ {0};
   // File extension the storage plugin appends to a uri, so the next file's name can be
   // recorded in metadata before the consumer opens it.
   std::string storage_extension_;
