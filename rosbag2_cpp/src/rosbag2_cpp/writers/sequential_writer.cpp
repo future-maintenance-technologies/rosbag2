@@ -215,6 +215,12 @@ void SequentialWriter::open(
       std::bind(&SequentialWriter::write_messages, this, std::placeholders::_1));
   }
 
+  async_split_ = allow_async_split_ && use_cache_ && storage_options_.split_on_keyframe &&
+    !storage_options_.snapshot_mode;
+  storage_extension_ = fs::path(storage_->get_relative_file_path()).extension().generic_string();
+  pending_splits_.clear();
+  consumer_message_count_ = 0;
+
   init_metadata();
   // Register topics in storage if they already exists
   metadata_.topics_with_message_count.clear();
@@ -337,7 +343,10 @@ void SequentialWriter::create_topic(
   }
 
   if (is_open_.load()) {
-    storage_->create_topic(topic_with_type, message_definition);
+    {
+      std::lock_guard<std::mutex> storage_lock(storage_mutex_);
+      storage_->create_topic(topic_with_type, message_definition);
+    }
     metadata_.topics_with_message_count.push_back(info);
     if (converter_) {
       converter_->add_topic(topic_with_type.name, topic_with_type.type);
@@ -347,12 +356,16 @@ void SequentialWriter::create_topic(
 
 void SequentialWriter::remove_topic(const rosbag2_storage::TopicMetadata & topic_with_type)
 {
-  std::lock_guard<std::mutex> lock(topics_info_mutex_);
-  bool erased = topics_names_to_info_.erase(topic_with_type.name) > 0;
-  erased = erased && (topic_names_to_message_definitions_.erase(topic_with_type.name) > 0);
+  bool erased;
+  {
+    std::lock_guard<std::mutex> lock(topics_info_mutex_);
+    erased = topics_names_to_info_.erase(topic_with_type.name) > 0;
+    erased = erased && (topic_names_to_message_definitions_.erase(topic_with_type.name) > 0);
+  }
 
   if (erased) {
     if (is_open_.load()) {
+      std::lock_guard<std::mutex> storage_lock(storage_mutex_);
       storage_->remove_topic(topic_with_type);
     }
   } else {
@@ -383,6 +396,9 @@ void SequentialWriter::switch_to_next_storage()
     message_cache_->log_dropped();
   }
 
+  if (async_split_) {
+    metadata_.message_count = consumer_message_count_;
+  }
   storage_->update_metadata(metadata_);
   storage_options_.uri = format_storage_uri(
     base_folder_,
@@ -523,7 +539,7 @@ bool SequentialWriter::handle_keyframe_split(
     rosbag2_storage::storage_interfaces::MAX_BAGFILE_DURATION_NO_SPLIT;
   if (should_split_by_size()) {
     // Size splits are never deferred (bounds file growth if a stream stalls).
-    split_bagfile();
+    split_bagfile_for_keyframe_mode();
     metadata_.files.back().starting_time = message_timestamp;
     arm_topics_awaiting_keyframe();
   } else if (has_any_video_topic() && duration_split_configured) {
@@ -544,7 +560,7 @@ bool SequentialWriter::handle_keyframe_split(
     }
   } else if (should_split_by_duration(message_timestamp)) {
     // No video topics at all - behave like a normal split.
-    split_bagfile();
+    split_bagfile_for_keyframe_mode();
     metadata_.files.back().starting_time = message_timestamp;
   }
 
@@ -631,7 +647,7 @@ void SequentialWriter::finalize_buffered_split()
     }
   }
 
-  split_bagfile();
+  split_bagfile_for_keyframe_mode();
   metadata_.files.back().starting_time = cut_time;
   arm_topics_awaiting_keyframe();
   // Topics already placed on a keyframe above don't need the post-cut gate.
@@ -680,6 +696,82 @@ void SequentialWriter::finalize_buffered_split()
   buffering_for_split_ = false;
   split_lookahead_buffer_.clear();
   split_lookahead_buffer_bytes_ = 0;
+}
+
+void SequentialWriter::split_bagfile_for_keyframe_mode()
+{
+  if (!async_split_) {
+    split_bagfile();
+    return;
+  }
+  // Bookkeeping stays on this thread, exactly as switch_to_next_storage() does it, so
+  // metadata_ keeps a single writer. Only closing and opening files moves to the consumer.
+  PendingSplit split;
+  split.closing_metadata = metadata_;
+  split.next_storage_options = storage_options_;
+  split.next_storage_options.uri =
+    format_storage_uri(base_folder_, metadata_.relative_file_paths.size());
+  storage_options_.uri = split.next_storage_options.uri;
+
+  rosbag2_storage::FileInformation file_info{};
+  file_info.starting_time =
+    std::chrono::time_point<std::chrono::high_resolution_clock>(std::chrono::nanoseconds::max());
+  file_info.path = strip_parent_path(split.next_storage_options.uri) + storage_extension_;
+  metadata_.files.push_back(file_info);
+  metadata_.relative_file_paths.push_back(file_info.path);
+  split.opened_metadata = metadata_;
+  {
+    std::lock_guard<std::mutex> lock(pending_splits_mutex_);
+    pending_splits_.push_back(std::move(split));
+  }
+
+  auto marker = std::make_shared<rosbag2_storage::SerializedBagMessage>();
+  marker->topic_name = cache::kSplitMarkerTopic;
+  marker->serialized_data = std::make_shared<rcutils_uint8_array_t>();  // zero-length
+  message_cache_->push(marker);
+}
+
+void SequentialWriter::switch_storage_in_consumer()
+{
+  PendingSplit split;
+  {
+    std::lock_guard<std::mutex> lock(pending_splits_mutex_);
+    if (pending_splits_.empty()) {
+      ROSBAG2_CPP_LOG_ERROR("[keyframe-split] split marker with no pending split; ignoring it");
+      return;
+    }
+    split = std::move(pending_splits_.front());
+    pending_splits_.pop_front();
+  }
+
+  std::string closed_file;
+  std::string opened_file;
+  {
+    std::lock_guard<std::mutex> storage_lock(storage_mutex_);
+    closed_file = storage_->get_relative_file_path();
+    split.closing_metadata.message_count = consumer_message_count_;
+    storage_->update_metadata(split.closing_metadata);
+    storage_ = storage_factory_->open_read_write(split.next_storage_options);
+    if (!storage_) {
+      std::stringstream errmsg;
+      errmsg << "Failed to rollover bagfile to new file: \"" <<
+        split.next_storage_options.uri << "\"!";
+      throw std::runtime_error(errmsg.str());
+    }
+    opened_file = storage_->get_relative_file_path();
+    if (strip_parent_path(opened_file) != split.opened_metadata.relative_file_paths.back()) {
+      ROSBAG2_CPP_LOG_WARN(
+        "[keyframe-split] opened '%s' but metadata expected '%s'", opened_file.c_str(),
+        split.opened_metadata.relative_file_paths.back().c_str());
+    }
+    storage_->update_metadata(split.opened_metadata);
+    std::lock_guard<std::mutex> lock(topics_info_mutex_);
+    for (const auto & topic : topics_names_to_info_) {
+      storage_->create_topic(
+        topic.second.topic_metadata, topic_names_to_message_definitions_[topic.first]);
+    }
+  }
+  execute_bag_split_callbacks(closed_file, opened_file);
 }
 
 void SequentialWriter::write(std::shared_ptr<const rosbag2_storage::SerializedBagMessage> message)
@@ -754,6 +846,9 @@ bool SequentialWriter::should_split_by_size() const
   if (storage_options_.max_bagfile_size ==
     rosbag2_storage::storage_interfaces::MAX_BAGFILE_SIZE_NO_SPLIT)
   {
+    return false;
+  }
+  if (async_split_) {
     return false;
   }
   // TODO(morlov): consider cached messages size in splitting decision. Right now we only consider
@@ -834,10 +929,35 @@ void SequentialWriter::finalize_metadata()
 void SequentialWriter::write_messages(
   const std::vector<std::shared_ptr<const rosbag2_storage::SerializedBagMessage>> & messages)
 {
+  const auto is_marker = [](const auto & msg) {return msg->topic_name == cache::kSplitMarkerTopic;};
+  auto marker = async_split_ ?
+    std::find_if(messages.begin(), messages.end(), is_marker) : messages.end();
+  if (marker == messages.end()) {
+    write_message_run(messages);
+    return;
+  }
+  auto begin = messages.begin();
+  while (true) {
+    write_message_run({begin, marker});
+    if (marker == messages.end()) {
+      return;
+    }
+    switch_storage_in_consumer();
+    begin = marker + 1;
+    marker = std::find_if(begin, messages.end(), is_marker);
+  }
+}
+
+void SequentialWriter::write_message_run(
+  const std::vector<std::shared_ptr<const rosbag2_storage::SerializedBagMessage>> & messages)
+{
   if (messages.empty()) {
     return;
   }
-  storage_->write(messages);
+  {
+    std::lock_guard<std::mutex> storage_lock(storage_mutex_);
+    storage_->write(messages);
+  }
   if (storage_options_.snapshot_mode) {
     // Update FileInformation about the last file in metadata in case of snapshot mode
     const auto first_msg_timestamp = std::chrono::time_point<std::chrono::high_resolution_clock>(
@@ -848,7 +968,11 @@ void SequentialWriter::write_messages(
     metadata_.files.back().duration = last_msg_timestamp - first_msg_timestamp;
     metadata_.files.back().message_count = messages.size();
   }
-  metadata_.message_count += messages.size();
+  if (async_split_) {
+    consumer_message_count_ += messages.size();
+  } else {
+    metadata_.message_count += messages.size();
+  }
   std::lock_guard<std::mutex> lock(topics_info_mutex_);
   for (const auto & msg : messages) {
     if (topics_names_to_info_.find(msg->topic_name) != topics_names_to_info_.end()) {

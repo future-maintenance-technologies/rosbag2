@@ -50,7 +50,9 @@ SequentialCompressionWriter::SequentialCompressionWriter(
 : SequentialWriter(),
   compression_factory_{std::make_unique<rosbag2_compression::CompressionFactory>()},
   compression_options_{compression_options}
-{}
+{
+  allow_async_split_ = false;
+}
 
 SequentialCompressionWriter::SequentialCompressionWriter(
   const rosbag2_compression::CompressionOptions & compression_options,
@@ -61,7 +63,9 @@ SequentialCompressionWriter::SequentialCompressionWriter(
 : SequentialWriter(std::move(storage_factory), converter_factory, std::move(metadata_io)),
   compression_factory_{std::move(compression_factory)},
   compression_options_{compression_options}
-{}
+{
+  allow_async_split_ = false;
+}
 
 SequentialCompressionWriter::~SequentialCompressionWriter()
 {

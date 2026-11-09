@@ -18,6 +18,7 @@
 #include <memory>
 #include <mutex>
 #include <chrono>
+#include <deque>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -144,6 +145,8 @@ public:
   void split_bagfile() override;
 
 protected:
+  // Subclasses that must compress the closed file at split time turn this off.
+  bool allow_async_split_ {true};
   std::string base_folder_;
   std::unique_ptr<rosbag2_storage::StorageFactoryInterface> storage_factory_;
   std::shared_ptr<SerializationFormatConverterFactoryInterface> converter_factory_;
@@ -251,6 +254,35 @@ private:
   // Running total of split_lookahead_buffer_'s bytes, capped at kMaxLookaheadBufferBytes so a
   // stuck keyframe cluster can't grow the buffer without bound.
   size_t split_lookahead_buffer_bytes_ {0};
+
+  // Keyframe-mode splits with a cache are done by the cache consumer, not inside write():
+  // closing a file and draining the look-ahead burst there blocked the recorder's receive
+  // path long enough (20-100 ms) for shallow subscription queues to drop messages.
+  bool async_split_ {false};
+  // Messages written by the cache consumer; stamped on the closed file's metadata at a split.
+  uint64_t consumer_message_count_ {0};
+  // File extension the storage plugin appends to a uri, so the next file's name can be
+  // recorded in metadata before the consumer opens it.
+  std::string storage_extension_;
+  // Guards storage_ while the consumer may be swapping it for the next file.
+  std::mutex storage_mutex_;
+  struct PendingSplit
+  {
+    rosbag2_storage::BagMetadata closing_metadata;  // as stock passes before rolling over
+    rosbag2_storage::BagMetadata opened_metadata;   // with the next file appended
+    rosbag2_storage::StorageOptions next_storage_options;
+  };
+  // One entry per split marker in the cache, in the same order.
+  std::mutex pending_splits_mutex_;
+  std::deque<PendingSplit> pending_splits_;
+
+  // Splits for keyframe mode: hands the rollover to the cache consumer when async_split_,
+  // otherwise splits in place like split_bagfile().
+  void split_bagfile_for_keyframe_mode();
+  // Runs on the cache consumer thread when it reaches a split marker.
+  void switch_storage_in_consumer();
+  void write_message_run(
+    const std::vector<std::shared_ptr<const rosbag2_storage::SerializedBagMessage>> & messages);
 
   // Re-arms topics_awaiting_keyframe_ with every known video topic (called at each split).
   void arm_topics_awaiting_keyframe();

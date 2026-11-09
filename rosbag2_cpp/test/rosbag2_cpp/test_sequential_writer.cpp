@@ -14,14 +14,18 @@
 
 #include <gmock/gmock.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
+#include <future>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "rosbag2_cpp/cache/message_cache_buffer.hpp"
 #include "rosbag2_cpp/writers/keyframe_detection.hpp"
 #include "rosbag2_cpp/writers/sequential_writer.hpp"
 #include "rosbag2_cpp/writer.hpp"
@@ -95,6 +99,7 @@ public:
   std::vector<rosbag2_storage::BagMetadata> v_intercepted_update_metadata_;
   std::unique_ptr<rosbag2_cpp::Writer> writer_;
   std::string fake_storage_uri_;
+  std::mutex uri_mutex_;
   const std::string bag_base_dir_ = "test_bag";
 };
 
@@ -522,6 +527,99 @@ TEST_F(SequentialWriterTest, keyframe_split_cuts_new_file_at_next_keyframe_not_m
     }
   }
   EXPECT_TRUE(found_first_of_file1);
+}
+
+TEST_F(SequentialWriterTest, keyframe_split_with_cache_rolls_over_off_the_write_path) {
+  // With a cache, the rollover (closing the old file, opening the next) must happen on the
+  // cache consumer thread: done inside write() it stalled the recorder's receive path long
+  // enough for shallow subscription queues to drop messages. Here opening the next file
+  // blocks until released, so a rollover inside write() would hang the writes below.
+  using SharedMsg = std::shared_ptr<const rosbag2_storage::SerializedBagMessage>;
+  using SharedMsgs = std::vector<SharedMsg>;
+
+  storage_options_.split_on_keyframe = true;
+  storage_options_.max_bagfile_duration = 2;  // seconds
+  storage_options_.keyframe_lookback_sec = 1.0;
+  storage_options_.max_cache_size = 1024 * 1024;
+
+  std::promise<void> release_rollover;
+  std::shared_future<void> rollover_released = release_rollover.get_future().share();
+  std::atomic<size_t> open_read_write_calls{0};
+  ON_CALL(*storage_factory_, open_read_write(_)).WillByDefault(
+    DoAll(
+      Invoke(
+        [&](const rosbag2_storage::StorageOptions & so) {
+          if (open_read_write_calls++ > 0) {
+            rollover_released.wait();
+          }
+          std::lock_guard<std::mutex> lock(uri_mutex_);
+          fake_storage_uri_ = so.uri;
+        }),
+      Return(storage_)));
+  ON_CALL(*storage_, get_relative_file_path).WillByDefault(
+    [this]() {
+      std::lock_guard<std::mutex> lock(uri_mutex_);
+      return fake_storage_uri_ + ".mcap";
+    });
+
+  // (file index, is_keyframe) for every message written to storage, in order. Only the
+  // consumer thread writes, and it is joined before the checks below.
+  std::vector<std::pair<size_t, bool>> committed;
+  ON_CALL(*storage_, write(An<const SharedMsgs &>())).WillByDefault(
+    [&](const SharedMsgs & msgs) {
+      for (const auto & msg : msgs) {
+        EXPECT_NE(msg->topic_name, rosbag2_cpp::cache::kSplitMarkerTopic) <<
+          "the split marker must never reach storage";
+        committed.emplace_back(
+          open_read_write_calls - 1, rosbag2_cpp::writers::compressed_video_has_idr(
+            msg->serialized_data->buffer, msg->serialized_data->buffer_length));
+      }
+    });
+  ON_CALL(*metadata_io_, write_metadata).WillByDefault(
+    [this](const std::string &, const rosbag2_storage::BagMetadata & metadata) {
+      fake_metadata_ = metadata;
+    });
+
+  auto sequential_writer = std::make_unique<rosbag2_cpp::writers::SequentialWriter>(
+    std::move(storage_factory_), converter_factory_, std::move(metadata_io_));
+  writer_ = std::make_unique<rosbag2_cpp::Writer>(std::move(sequential_writer));
+  writer_->open(storage_options_);
+  writer_->create_topic({0u, "cam", "foxglove_msgs/msg/CompressedVideo", "", {}, ""});
+
+  const std::vector<std::pair<double, bool>> frames = {
+    {0.0, true}, {0.5, false}, {1.0, false}, {1.2, false},
+    {1.4, true},   // must become the file boundary
+    {1.6, false},
+    {2.1, false},  // crosses max_bagfile_duration: the split is decided here
+    {2.2, false},  // written while the rollover is still blocked
+  };
+  auto writes = std::async(
+    std::launch::async, [&]() {
+      for (const auto & [t_sec, is_kf] : frames) {
+        writer_->write(
+          make_video_msg("cam", static_cast<rcutils_time_point_value_t>(t_sec * 1e9), is_kf));
+      }
+    });
+  EXPECT_EQ(writes.wait_for(std::chrono::seconds(5)), std::future_status::ready) <<
+    "write() waited for the rollover; it must hand it to the cache consumer";
+  release_rollover.set_value();
+  writes.get();
+  writer_.reset();
+
+  size_t file0_count = 0, file1_count = 0;
+  for (const auto & [file_idx, is_kf] : committed) {
+    (file_idx == 0 ? file0_count : file1_count)++;
+  }
+  EXPECT_EQ(file0_count, 4u) << "file 0 should hold the frames before the keyframe at 1.4s";
+  EXPECT_EQ(file1_count, 4u) << "file 1 should hold the frames from the keyframe at 1.4s on";
+  const auto first_in_file1 = std::find_if(
+    committed.begin(), committed.end(), [](const auto & c) {return c.first == 1;});
+  ASSERT_NE(first_in_file1, committed.end());
+  EXPECT_TRUE(first_in_file1->second) << "the new file must start on a keyframe";
+
+  ASSERT_EQ(fake_metadata_.relative_file_paths.size(), 2u);
+  EXPECT_EQ(fake_metadata_.relative_file_paths[1], bag_base_dir_ + "_1.mcap");
+  EXPECT_EQ(fake_metadata_.message_count, frames.size());
 }
 
 TEST_F(SequentialWriterTest, keyframe_split_does_not_gate_topic_with_no_keyframe_evidence) {
