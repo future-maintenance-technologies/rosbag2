@@ -35,6 +35,10 @@ namespace rosbag2_cpp
 {
 namespace cache
 {
+
+/// Topic name of the in-band marker SequentialWriter pushes to ask the cache consumer to roll
+/// over to the next bagfile. Starts with a control character, so no ROS topic can collide.
+inline const char * const kSplitMarkerTopic = "\x01rosbag2_split_marker";
 /**
 * This class implements a single buffer for message cache. The buffer is byte size
 * limited and won't accept any messages when current buffer byte size is already

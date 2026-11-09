@@ -31,7 +31,8 @@ MessageCacheBuffer::MessageCacheBuffer(size_t max_cache_size)
 bool MessageCacheBuffer::push(CacheBufferInterface::buffer_element_t msg)
 {
   bool pushed = false;
-  if (!drop_messages_) {
+  // A split marker is never dropped: losing it would leave every later message in the old file.
+  if (!drop_messages_ || msg->topic_name == kSplitMarkerTopic) {
     buffer_bytes_size_ += msg->serialized_data->buffer_length;
     buffer_.push_back(msg);
     pushed = true;
