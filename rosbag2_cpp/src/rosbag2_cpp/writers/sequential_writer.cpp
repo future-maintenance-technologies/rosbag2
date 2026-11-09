@@ -396,6 +396,9 @@ void SequentialWriter::switch_to_next_storage()
     message_cache_->log_dropped();
   }
 
+  if (async_split_) {
+    metadata_.message_count = consumer_message_count_;
+  }
   storage_->update_metadata(metadata_);
   storage_options_.uri = format_storage_uri(
     base_folder_,
